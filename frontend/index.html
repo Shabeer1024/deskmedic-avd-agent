@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>DeskMedic — AVD Troubleshooting Agent</title>
+<link rel="stylesheet" href="/static/styles.css?v=dm-1" />
+</head>
+<body>
+
+<!-- =====================================================================
+     Header. #env-badges is populated by app.js from /api/capabilities and
+     /api/me - the browser never decides what these say.
+     ================================================================== -->
+<header class="topbar">
+  <div class="brand">
+    <span class="mark" aria-hidden="true">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="4" width="18" height="12" rx="2"/>
+        <path d="M8 20h8M12 16v4"/>
+        <path d="M6.5 10h2.5l1.5-2.5 2 5 1.5-2.5h3.5"/>
+      </svg>
+    </span>
+    <div class="brand-text">
+      <h1>DeskMedic</h1>
+      <p class="sub">AVD troubleshooting agent</p>
+    </div>
+  </div>
+
+  <div class="topbar-right">
+    <!-- Mode switch. Read-only presents no identity, so the backend falls back
+         to avd.operator and every write is refused. Troubleshoot presents an
+         approver identity, so approve + execute become possible. The BACKEND
+         still decides: this only chooses which identity the console presents,
+         and the REMEDIATION_ENABLED kill switch overrides it either way. -->
+    <div class="mode-switch" id="mode-switch" role="group" aria-label="Agent mode">
+      <button type="button" class="mode-opt is-on" data-mode="readonly" aria-pressed="true">
+        <span class="mode-dot" aria-hidden="true"></span>Read-only
+      </button>
+      <button type="button" class="mode-opt" data-mode="troubleshoot" aria-pressed="false">
+        <span class="mode-dot" aria-hidden="true"></span>Troubleshoot
+      </button>
+    </div>
+
+    <div class="user">
+      <span class="avatar" id="user-initials">··</span>
+      <span class="user-text">
+        <strong id="user-name">Signed in</strong>
+        <small>Cloud Infra Team</small>
+      </span>
+    </div>
+  </div>
+</header>
+
+<div class="env-strip"><div class="env" id="env-badges"></div></div>
+
+<main class="page">
+
+  <!-- ============================================================ Intro -->
+  <section class="intro">
+    <h2>Describe the problem. I find the cause, fix it safely, and prove it works.</h2>
+    <p>Tell me what the user is seeing. I check the session hosts, FSLogix profiles,
+       storage and network, find the root cause, and apply an approved fix after you
+       say yes.</p>
+
+    <div class="value-grid">
+      <div class="value">
+        <span class="v-ico">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></svg>
+        </span>
+        <div>
+          <strong>Investigates</strong>
+          <small>Read-only checks on hosts, FSLogix, storage, DNS and network</small>
+        </div>
+      </div>
+      <div class="value">
+        <span class="v-ico">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L4 17l3 3 5.3-5.3a4 4 0 0 0 5.4-5.4l-2.4 2.4-2.6-.4-.4-2.6z"/></svg>
+        </span>
+        <div>
+          <strong>Fixes</strong>
+          <small>Only approved runbooks, only after your approval</small>
+        </div>
+      </div>
+      <div class="value">
+        <span class="v-ico">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m8 12.5 2.5 2.5L16 9.5"/></svg>
+        </span>
+        <div>
+          <strong>Verifies</strong>
+          <small>Re-checks everything before reporting it fixed</small>
+        </div>
+      </div>
+      <div class="value is-guard">
+        <span class="v-ico">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M12 3 5 6v5c0 4.5 3 8.3 7 10 4-1.7 7-5.5 7-10V6z"/></svg>
+        </span>
+        <div>
+          <strong>Never deletes data</strong>
+          <small>No profile, VHDX or host pool is ever removed or reset</small>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========================================================== Stepper -->
+  <ol class="stepper" id="stepper">
+    <li class="is-current" data-step="describe"><b>1</b><span><strong>Describe</strong><small>Tell me the issue</small></span></li>
+    <li data-step="diagnose"><b>2</b><span><strong>Diagnose</strong><small>I find the cause</small></span></li>
+    <li data-step="approve"><b>3</b><span><strong>Approve</strong><small>You review the fix</small></span></li>
+    <li data-step="remediate"><b>4</b><span><strong>Fix</strong><small>Approved runbook runs</small></span></li>
+    <li data-step="verify"><b>5</b><span><strong>Verify</strong><small>Proven working</small></span></li>
+  </ol>
+
+  <div class="layout">
+    <div class="col-main">
+
+      <!-- ============================================================ Chat -->
+      <section class="chat-main" id="chat-shell">
+        <div class="card-head">
+          <h2>Ask the agent</h2>
+          <p class="hint">Plain language is fine. You don't need host names.</p>
+        </div>
+
+        <div class="chat-log" id="chat-log" aria-live="polite">
+          <div class="msg agent">
+            <span class="who">Agent</span>
+            <div class="bubble">
+              <p>Hi, tell me what's wrong and I'll take it from there. For example:</p>
+              <ul>
+                <li>"How many session hosts do I have, and are they all healthy?"</li>
+                <li>"testuser01 is getting a temporary profile"</li>
+                <li>"Users can't connect since this morning"</li>
+              </ul>
+              <p>When I find the cause, I'll show you the fix and wait for your
+                 approval before anything runs.</p>
+            </div>
+          </div>
+        </div>
+
+        <form class="chat-input" id="chat-form" autocomplete="off">
+          <input id="chat-text" placeholder="Describe the problem or ask about your environment…" />
+          <button class="primary" id="chat-send" type="submit">Send</button>
+        </form>
+      </section>
+
+      <!-- ---------------------------------------------------------- Intake -->
+      <details class="form-toggle">
+        <summary>Prefer a form? Open the structured investigation</summary>
+      </details>
+
+      <section class="card" id="intake">
+        <div class="card-head">
+          <h2>Structured investigation</h2>
+          <p class="hint">Fill in what you know. Everything else is optional.</p>
+        </div>
+
+        <div class="field-wrap">
+          <textarea id="description" rows="3" maxlength="1000"
+            placeholder="e.g. testuser01 is getting a temporary profile since this morning."></textarea>
+          <span class="counter" id="char-count">0/1000</span>
+        </div>
+
+        <!-- Combo boxes: pick from what /api/estate discovered, or type. -->
+        <div class="grid">
+          <label>User <input id="user_principal_name" placeholder="testuser01@contoso.com" /></label>
+
+          <label>
+            Host pool
+            <span class="combo">
+              <input id="host_pool" list="dl-host-pools" placeholder="select or type…" autocomplete="off" />
+              <datalist id="dl-host-pools"></datalist>
+            </span>
+          </label>
+
+          <label>
+            Session host
+            <span class="combo">
+              <input id="session_host" list="dl-session-hosts" placeholder="select or type…" autocomplete="off" />
+              <datalist id="dl-session-hosts"></datalist>
+            </span>
+          </label>
+
+          <label>
+            Resource group
+            <span class="combo">
+              <input id="resource_group" list="dl-resource-groups" placeholder="select or type…" autocomplete="off" />
+              <datalist id="dl-resource-groups"></datalist>
+            </span>
+          </label>
+
+          <label>
+            Subscription
+            <span class="combo">
+              <input id="subscription_id" list="dl-subscriptions" placeholder="optional" autocomplete="off" />
+              <datalist id="dl-subscriptions"></datalist>
+            </span>
+          </label>
+
+          <label>Ticket ID <input id="ticket_id" placeholder="INC12345" /></label>
+        </div>
+
+        <p class="discovery" id="discovery-note" hidden></p>
+
+        <div class="actions">
+          <button id="investigate" class="primary">Investigate</button>
+          <span class="examples">
+            Examples:
+            <button class="link" data-example="agent">Host unavailable</button>
+            <button class="link" data-example="fslogix">Temp profile</button>
+            <button class="link" data-example="connect">Can't connect</button>
+            <button class="link" data-example="injection">Unsafe request</button>
+          </span>
+          <span class="spacer"></span>
+          <button id="reset-estate" class="ghost" title="Restore the simulated estate">Reset demo data</button>
+        </div>
+
+        <p class="error" id="intake-error" hidden></p>
+      </section>
+
+      <!-- ---------------------------------------------------------- Result -->
+      <div id="result" hidden>
+        <section class="card">
+          <div class="card-head">
+            <h2>Investigation</h2>
+            <div class="meta" id="incident-meta"></div>
+          </div>
+          <ol class="steps" id="steps"></ol>
+        </section>
+
+        <section class="card" id="diagnosis-card">
+          <h2>Root cause</h2>
+          <div id="diagnosis"></div>
+        </section>
+
+        <section class="card" id="remediation-card" hidden>
+          <h2>Proposed fix</h2>
+          <div id="remediation"></div>
+        </section>
+
+        <section class="card" id="execution-card" hidden>
+          <h2>Execution</h2>
+          <div id="execution"></div>
+        </section>
+
+        <section class="card" id="verification-card" hidden>
+          <h2>Verification</h2>
+          <div id="verification"></div>
+        </section>
+
+        <section class="card" id="context-card">
+          <h2>References &amp; history</h2>
+          <div id="context"></div>
+        </section>
+      </div>
+    </div>
+
+    <!-- ======================================================= Side column -->
+    <aside class="col-side">
+      <!-- Live activity: every check and every execution step shows here. -->
+      <section class="side-card">
+        <div class="side-head"><span class="dot-live" id="activity-dot"></span><h3>Live activity</h3></div>
+        <ol class="activity-log" id="activity-log">
+          <li class="idle">Nothing running.</li>
+        </ol>
+      </section>
+
+      <section class="side-card">
+        <div class="side-head"><h3>What I troubleshoot</h3></div>
+        <ul class="scope">
+          <li><strong>Hosts &amp; registration</strong><small>Agent, VM state, registration, pending reboot</small></li>
+          <li><strong>Profiles</strong><small>Temp profile, slow logon, profile disk full</small></li>
+          <li><strong>Sessions</strong><small>Black screen, stuck sessions, disconnects</small></li>
+          <li><strong>Performance &amp; scaling</strong><small>High CPU/memory, scaling plans</small></li>
+          <li><strong>Apps &amp; devices</strong><small>RemoteApp, App Attach, Teams, redirection</small></li>
+          <li><strong>Identity &amp; network</strong><small>Domain trust, clock skew, URLs, private DNS</small></li>
+        </ul>
+      </section>
+
+      <section class="side-card">
+        <div class="side-head"><h3>Agent status</h3></div>
+        <dl class="kv" id="capability-kv"></dl>
+      </section>
+    </aside>
+  </div>
+</main>
+
+<footer>
+  <span id="footer-note">Checks run automatically and are read-only. Every change needs your approval.</span>
+</footer>
+
+<script src="/static/app.js"></script>
+<script src="/static/ui.js"></script>
+<script src="/static/chat.js"></script>
+</body>
+</html>

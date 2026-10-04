@@ -1,0 +1,255 @@
+/* Conversational front end.
+ *
+ * This file talks to /api/chat and renders the conversation. It makes exactly
+ * one kind of state-changing call - the approval, and only when a human clicks
+ * the button. The model's reply can *propose* a fix; it can never approve one,
+ * so there is no path from "the agent said so" to a change on a session host.
+ */
+"use strict";
+
+(() => {
+  const byId = (id) => document.getElementById(id);
+  const log = byId("chat-log");
+  const form = byId("chat-form");
+  const input = byId("chat-text");
+  const send = byId("chat-send");
+  const activity = byId("activity-log");
+  const dot = byId("activity-dot");
+
+  if (!form || !log) return;
+
+  /** Full conversation, replayed to the backend each turn so the agent has
+   *  context. Kept client-side: the server holds no chat session. */
+  const messages = [];
+  let incidentId = null;
+
+  /* ------------------------------------------------------------- rendering */
+  const node = (tag, cls, text) => {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text !== undefined) n.textContent = text;
+    return n;
+  };
+
+  function bubble(role, text) {
+    const wrap = node("div", `msg ${role}`);
+    wrap.appendChild(node("span", "who", role === "user" ? "You" : "Agent"));
+    const body = node("div", "bubble");
+    // textContent, never innerHTML: a reply is untrusted content and must not
+    // be able to inject markup into the console.
+    body.appendChild(node("p", null, text));
+    wrap.appendChild(body);
+    log.appendChild(wrap);
+    log.scrollTop = log.scrollHeight;
+    return body;
+  }
+
+  function setBusy(busy, label) {
+    send.disabled = busy;
+    input.disabled = busy;
+    send.textContent = busy ? "Working…" : "Send";
+    dot?.classList.toggle("is-busy", busy);
+    if (busy && label) pushActivity({ tool: label, status: "running", summary: "in progress…" });
+  }
+
+  function pushActivity(entry) {
+    activity.querySelector(".idle")?.remove();
+    const li = node("li", `act ${entry.status || ""}`);
+    li.appendChild(node("span", "act-tool", entry.tool));
+    li.appendChild(node("span", "act-sum", entry.summary || ""));
+    activity.appendChild(li);
+    activity.scrollTop = activity.scrollHeight;
+    return li;
+  }
+
+  function resetActivity() {
+    activity.replaceChildren();
+    activity.appendChild(node("li", "idle", "Nothing running."));
+  }
+
+  /* ---------------------------------------------------- approval affordance */
+  // Rendered only when the BACKEND says a plan is awaiting approval. The button
+  // calls the same /approval endpoint the form uses, with the same permission
+  // check behind it.
+  function renderApproval(container, incident) {
+    const plan = incident?.remediation;
+    if (!plan) return;
+
+    const card = node("div", "approve-card");
+    card.appendChild(node("strong", null, plan.title || "Proposed fix"));
+    card.appendChild(node("p", "approve-why", plan.rationale || ""));
+
+    const meta = node("dl", "kv");
+    [
+      ["Action", plan.action_id],
+      ["Runbook", plan.script_name],
+      ["Risk", plan.risk],
+      ["Target", `${incident.target?.resource_group || ""}/${incident.target?.resource_name || ""}`],
+      ["Impact", plan.expected_impact],
+    ].forEach(([k, v]) => {
+      if (!v) return;
+      meta.appendChild(node("dt", null, k));
+      meta.appendChild(node("dd", null, String(v)));
+    });
+    card.appendChild(meta);
+
+    const details = node("details", "script-peek");
+    details.appendChild(node("summary", null, "Show the PowerShell that will run"));
+    details.appendChild(node("pre", "code", plan.script || ""));
+    card.appendChild(details);
+
+    const noteLabel = node("label", "approve-note");
+    noteLabel.appendChild(node("span", "hint", "Approver note (recorded in the audit trail)"));
+    const note = node("input");
+    note.placeholder = "e.g. approved on ticket INC12345";
+    noteLabel.appendChild(note);
+    card.appendChild(noteLabel);
+
+    const actions = node("div", "actions");
+    const approve = node("button", "primary", "Approve & Execute");
+    const reject = node("button", "ghost", "Reject");
+    actions.append(approve, reject);
+    card.appendChild(actions);
+    container.appendChild(card);
+    log.scrollTop = log.scrollHeight;
+
+    const decide = async (approved) => {
+      approve.disabled = reject.disabled = true;
+      approve.textContent = approved ? "Executing…" : "Rejecting…";
+      try {
+        const decision = await post(`/api/incidents/${incident.incident_id}/approval`, {
+          plan_id: plan.plan_id,
+          approved,
+          note: note.value.trim(),
+        });
+        if (!approved) {
+          bubble("agent", "Rejected. Nothing was changed.");
+          card.remove();
+          return;
+        }
+        pushActivity({ tool: "approval", status: "healthy", summary: "approved by you" });
+
+        const executed = await post(`/api/incidents/${incident.incident_id}/execute`, {
+          plan_id: plan.plan_id,
+        });
+        renderExecution(executed);
+      } catch (error) {
+        bubble("agent", `That failed: ${error.message}`);
+      } finally {
+        card.remove();
+      }
+    };
+
+    approve.addEventListener("click", () => decide(true));
+    reject.addEventListener("click", () => decide(false));
+  }
+
+  function renderExecution(incident) {
+    const execution = incident.execution;
+    if (execution) {
+      pushActivity({
+        tool: execution.script_name || "runbook",
+        status: execution.succeeded ? "healthy" : "unhealthy",
+        summary: execution.succeeded ? "completed" : execution.error || "failed",
+      });
+      (execution.output || []).forEach((line) =>
+        pushActivity({ tool: "output", status: "info", summary: line }),
+      );
+    }
+
+    const verification = incident.verification;
+    if (verification) {
+      (verification.checks || []).forEach((check) =>
+        pushActivity({
+          tool: "verify",
+          status: check.passed ? "healthy" : "unhealthy",
+          summary: check.description,
+        }),
+      );
+    }
+
+    const ok = verification?.passed ?? execution?.succeeded;
+    bubble(
+      "agent",
+      ok
+        ? "Done — the fix ran and the post-checks passed. The host should be back in service."
+        : "The fix ran but verification did not pass. Check the activity panel for what happened.",
+    );
+  }
+
+  /* ------------------------------------------------------------------ http */
+
+  /** Identity this panel presents. Defined here rather than borrowed from
+   *  app.js so chat keeps working even if that file is stale in a cache - and
+   *  so the two panels cannot drift apart on what "troubleshoot" means.
+   *
+   *  Local-development affordance only: behind Easy Auth, Azure sets these
+   *  headers itself and discards anything the browser sends. */
+  function identityHeaders() {
+    if (document.body.dataset.mode !== "troubleshoot") return {};
+    return {
+      "X-MS-CLIENT-PRINCIPAL-NAME": document.body.dataset.approverUpn || "approver@local",
+      "X-MS-CLIENT-PRINCIPAL-ROLES": "avd.approver",
+    };
+  }
+
+  async function post(path, body) {
+    const response = await fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...identityHeaders() },
+      body: JSON.stringify(body),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const d = payload.detail;
+      const message = Array.isArray(d)
+        ? d.map((e) => `${(e.loc || []).slice(1).join(".")}: ${e.msg}`).join("; ")
+        : d;
+      throw new Error(message || `${response.status} ${response.statusText}`);
+    }
+    return payload;
+  }
+
+  /* ------------------------------------------------------------------ turn */
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const text = input.value.trim();
+    if (!text) return;
+
+    bubble("user", text);
+    messages.push({ role: "user", content: text });
+    input.value = "";
+    resetActivity();
+    setBusy(true, "thinking");
+
+    try {
+      const turn = await post("/api/chat", { messages, incident_id: incidentId });
+
+      resetActivity();
+      (turn.activity || []).forEach(pushActivity);
+
+      if (turn.incident_id) incidentId = turn.incident_id;
+
+      const body = bubble("agent", turn.reply || "");
+      messages.push({ role: "assistant", content: turn.reply || "" });
+
+      // An investigation returns the full evidence list; show it as work done.
+      const incident = turn.incident;
+      if (incident) {
+        (incident.steps || []).forEach((step) =>
+          pushActivity({
+            tool: step.tool,
+            status: step.status,
+            summary: step.summary || step.stage,
+          }),
+        );
+      }
+
+      if (turn.awaiting_approval && incident) renderApproval(body, incident);
+    } catch (error) {
+      bubble("agent", `Something went wrong: ${error.message}`);
+    } finally {
+      setBusy(false);
+    }
+  });
+})();

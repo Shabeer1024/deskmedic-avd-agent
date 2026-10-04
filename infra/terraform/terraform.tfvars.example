@@ -1,0 +1,23 @@
+# Copy to terraform.tfvars and fill in for your environment.
+
+target_subscription_id = "00000000-0000-0000-0000-000000000000"
+container_image        = "myacr.azurecr.io/avd-ai-agent:0.1.0"
+
+avd_resource_group_ids = [
+  "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-avd-prod-uks",
+]
+
+host_pool_ids = [
+  "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-avd-prod-uks/providers/Microsoft.DesktopVirtualization/hostPools/hp-finance-prod",
+]
+
+avd_log_analytics_workspace_id          = "11111111-1111-1111-1111-111111111111"
+avd_log_analytics_workspace_resource_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-avd-prod-uks/providers/Microsoft.OperationalInsights/workspaces/log-avd-prod"
+fslogix_storage_account_id              = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-avd-prod-uks/providers/Microsoft.Storage/storageAccounts/stavdfslogixprod"
+
+environment           = "dev"
+public_network_access = false
+
+# Start here: investigate and propose, execute nothing.
+# remediation_enabled = false
+blocked_risk_levels = "high"

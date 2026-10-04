@@ -1,0 +1,64 @@
+[project]
+name = "avd-ai-agent"
+version = "0.1.0"
+description = "AVD AI Troubleshooting & Remediation Agent (MVP)"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "httpx>=0.27",
+    "python-json-logger>=2.0",
+]
+
+[project.optional-dependencies]
+# Installed only when connecting to real Azure. The app runs fully on mocks without these.
+azure = [
+    "openai>=1.54",
+    "azure-identity>=1.19",
+    "azure-mgmt-compute>=33.0",
+    "azure-mgmt-desktopvirtualization>=1.1",
+    "azure-mgmt-automation>=1.0",
+    "azure-mgmt-network>=27.0",
+    "azure-mgmt-storage>=21.2",
+    "azure-mgmt-resource>=23.1",
+    "azure-monitor-query>=1.4",
+    "azure-mgmt-monitor>=6.0",
+]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.7",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["backend"]
+
+[tool.pytest.ini_options]
+pythonpath = ["backend"]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# FastAPI's dependency-injection idiom is `param = Depends(...)` in the default.
+"backend/app/api/routes.py" = ["B008"]
+# Tests deliberately embed long adversarial payloads and long assertions.
+"tests/**" = ["E501"]
+# Detection tables read better as one regex per line than wrapped.
+"backend/app/security/injection.py" = ["E501"]
+"backend/app/powershell/validator.py" = ["E501"]
+# Embedded in-guest PowerShell reads better unwrapped than split across lines.
+"backend/app/providers/azure/diagnostics.py" = ["E501"]
