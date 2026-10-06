@@ -65,7 +65,9 @@ _RULES: tuple[tuple[str, re.Pattern[str], Severity, str], ...] = (
      "Recursive deletion is never an approved AVD remediation."),
     ("profile_deletion", re.compile(r"Remove-Item[^\n]*\.vhdx?|Remove-AzStorageFile|Remove-AzStorageShare", re.I),
      Severity.BLOCKING, "Deleting profile containers or shares destroys user data."),
-    ("resource_deletion", re.compile(r"\bRemove-Az[A-Za-z]+\b", re.I), Severity.BLOCKING,
+    # Remove-AzWvdUserSession is the one exception: it signs a user out (the
+    # portal's "Log off") and deletes no resource or data.
+    ("resource_deletion", re.compile(r"\bRemove-Az(?!WvdUserSession\b)[A-Za-z]+\b", re.I), Severity.BLOCKING,
      "Deleting Azure resources is out of scope for automated remediation."),
     ("disk_format", re.compile(r"\b(Format-Volume|Clear-Disk|Initialize-Disk|diskpart)\b", re.I),
      Severity.BLOCKING, "Disk operations destroy data."),

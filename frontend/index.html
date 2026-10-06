@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>DeskMedic — AVD Troubleshooting Agent</title>
-<link rel="stylesheet" href="/static/styles.css?v=dm-1" />
+<link rel="stylesheet" href="/static/styles.css?v=dm-3" />
 </head>
 <body>
 
@@ -152,18 +152,18 @@
       <section class="card" id="intake">
         <div class="card-head">
           <h2>Structured investigation</h2>
-          <p class="hint">Fill in what you know. Everything else is optional.</p>
+          <p class="hint">Pick one value - the rest is filled in for you.</p>
         </div>
 
         <div class="field-wrap">
           <textarea id="description" rows="3" maxlength="1000"
-            placeholder="e.g. testuser01 is getting a temporary profile since this morning."></textarea>
+            placeholder="Describe the problem - or leave empty and pick a host or user below for a full health check."></textarea>
           <span class="counter" id="char-count">0/1000</span>
         </div>
 
         <!-- Combo boxes: pick from what /api/estate discovered, or type. -->
         <div class="grid">
-          <label>User <input id="user_principal_name" placeholder="testuser01@contoso.com" /></label>
+          <label>User <input id="user_principal_name" placeholder="user@yourdomain.com" /></label>
 
           <label>
             Host pool
@@ -197,7 +197,7 @@
             </span>
           </label>
 
-          <label>Ticket ID <input id="ticket_id" placeholder="INC12345" /></label>
+          <label>Ticket ID <input id="ticket_id" placeholder="optional" /></label>
         </div>
 
         <p class="discovery" id="discovery-note" hidden></p>
@@ -289,8 +289,8 @@
   <span id="footer-note">Checks run automatically and are read-only. Every change needs your approval.</span>
 </footer>
 
-<script src="/static/app.js"></script>
-<script src="/static/ui.js"></script>
-<script src="/static/chat.js"></script>
+<script src="/static/app.js?v=4"></script>
+<script src="/static/ui.js?v=4"></script>
+<script src="/static/chat.js?v=6"></script>
 </body>
 </html>

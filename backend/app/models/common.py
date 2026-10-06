@@ -73,6 +73,8 @@ class Scenario(StrEnum):
     SSO_AUTHENTICATION = "sso_authentication"
     CLIENT_SIDE = "client_side"
     THIN_CLIENT = "thin_client"
+    # No symptom described: sweep everything about the selected host / user.
+    HEALTH_CHECK = "health_check"
     UNKNOWN = "unknown"
 
 

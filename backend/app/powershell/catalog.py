@@ -290,8 +290,8 @@ CLEAR_STALE_FSLOGIX_LOCK = RemediationAction(
     description=(
         "Close the orphaned SMB handle a crashed session left on the user's "
         "profile VHDX. NO PROFILE DATA IS DELETED OR MODIFIED. The runbook "
-        "refuses if the user still has a session, if the handle is younger than "
-        "15 minutes, or if handles are open from more than one client."
+        "refuses if the user still has a session or if handles are open from more "
+        "than one client. It runs immediately once approved."
     ),
     risk=RiskLevel.MEDIUM,
     runbook_name="Clear-StaleFslogixLock",
@@ -312,7 +312,7 @@ CLEAR_STALE_FSLOGIX_LOCK = RemediationAction(
         "ShareName": ctx.get("shareName", "profiles"),
         "ResourceGroupName": target.resource_group,
         "HostPoolName": target.host_pool,
-        "MinimumLockAgeMinutes": 15,
+        "MinimumLockAgeMinutes": 0,
     },
     build_pre_checks=lambda target, ctx: [
         VerificationCheck(
@@ -563,10 +563,9 @@ LOGOFF_DISCONNECTED_SESSION = RemediationAction(
     action_id="logoff_disconnected_session",
     title="Sign out the user's orphaned disconnected session",
     description=(
-        "Log off one user's session that has been disconnected for at least 30 "
-        "minutes. The runbook refuses if the session is active, if it was "
-        "disconnected recently, or if the user has no session on the host. The "
-        "user's FSLogix profile is saved as part of a normal logoff."
+        "Log off one user's disconnected session, immediately once approved. The "
+        "runbook refuses if the session is active or the user has no session on "
+        "the host. The user's FSLogix profile is saved as part of a normal logoff."
     ),
     risk=RiskLevel.MEDIUM,
     runbook_name="Invoke-AvdUserLogoff",
@@ -576,15 +575,16 @@ LOGOFF_DISCONNECTED_SESSION = RemediationAction(
         "unsaved in that session is lost; they can then sign in to a fresh session."
     ),
     rationale_template=(
-        "The user has a session that has been disconnected for a long time, which "
-        "keeps them pinned to it. Signing out that one session is the smallest change."
+        "The user has a disconnected session that keeps them pinned to it. "
+        "Signing out that one session is the smallest change."
     ),
     build_parameters=lambda target, ctx: {
         "VmName": target.resource_name,
         "ResourceGroupName": target.resource_group,
         "UserPrincipalName": _require(ctx, "userPrincipalName"),
+        "HostPoolName": target.host_pool or "",
         "Mode": "Disconnected",
-        "MinimumDisconnectedMinutes": 30,
+        "MinimumDisconnectedMinutes": 0,
     },
     build_pre_checks=lambda target, ctx: [
         _logon_check("pre-stale-session", target, ctx, "hasStaleDisconnected", True,
@@ -605,7 +605,7 @@ LOGOFF_HUNG_SESSION = RemediationAction(
     description=(
         "Log off one user's session whose shell (explorer.exe) never started. The "
         "runbook re-checks on the host and refuses if explorer.exe is running, if "
-        "the session is younger than 5 minutes, or if it is disconnected."
+        "the session is younger than 2 minutes, or if it is disconnected."
     ),
     risk=RiskLevel.MEDIUM,
     runbook_name="Invoke-AvdUserLogoff",
@@ -622,8 +622,9 @@ LOGOFF_HUNG_SESSION = RemediationAction(
         "VmName": target.resource_name,
         "ResourceGroupName": target.resource_group,
         "UserPrincipalName": _require(ctx, "userPrincipalName"),
+        "HostPoolName": target.host_pool or "",
         "Mode": "ShellHung",
-        "MinimumDisconnectedMinutes": 30,
+        "MinimumDisconnectedMinutes": 0,
     },
     build_pre_checks=lambda target, ctx: [
         _logon_check("pre-hung-shell", target, ctx, "hasHungShell", True,
@@ -634,6 +635,45 @@ LOGOFF_HUNG_SESSION = RemediationAction(
                      "The black-screen session is gone"),
     ],
     applies_to_root_causes=frozenset({"user_shell_hung"}),
+)
+
+LOGOFF_USER_SESSION = RemediationAction(
+    action_id="logoff_user_session",
+    title="Sign out the user's session now",
+    description=(
+        "Sign out one user's session on one host immediately, whatever its state. "
+        "Used when the engineer reports the session stuck and approves a reset. "
+        "Only that user's session on that host is affected; the FSLogix profile "
+        "is saved by the normal logoff."
+    ),
+    risk=RiskLevel.MEDIUM,
+    runbook_name="Invoke-AvdUserLogoff",
+    runbook_path="avd/Invoke-AvdUserLogoff.ps1",
+    expected_impact=(
+        "THE USER IS SIGNED OUT IMMEDIATELY. Anything unsaved in the session is "
+        "lost - tell the user before approving. They can sign straight back in."
+    ),
+    rationale_template=(
+        "The engineer reported the user's session as stuck and the user has a live "
+        "session on this host. Signing it out gives them a clean session."
+    ),
+    build_parameters=lambda target, ctx: {
+        "VmName": target.resource_name,
+        "ResourceGroupName": target.resource_group,
+        "UserPrincipalName": _require(ctx, "userPrincipalName"),
+        "HostPoolName": target.host_pool or "",
+        "Mode": "Any",
+        "MinimumDisconnectedMinutes": 0,
+    },
+    build_pre_checks=lambda target, ctx: [
+        _logon_check("pre-has-session", target, ctx, "userSessionCount", 1,
+                     "The user has a session on the host"),
+    ],
+    build_post_checks=lambda target, ctx: [
+        _logon_check("post-signed-out", target, ctx, "userSessionCount", 0,
+                     "The user has no remaining session on the host"),
+    ],
+    applies_to_root_causes=frozenset({"user_session_reset_requested"}),
 )
 
 RESTART_APPREADINESS = RemediationAction(
@@ -905,6 +945,7 @@ CATALOGUE: dict[str, RemediationAction] = {
         RESTART_SESSION_HOST_VM,
         LOGOFF_DISCONNECTED_SESSION,
         LOGOFF_HUNG_SESSION,
+        LOGOFF_USER_SESSION,
         RESTART_APPREADINESS,
         REREGISTER_SESSION_HOST,
         RESTART_PENDING_REBOOT_HOST,

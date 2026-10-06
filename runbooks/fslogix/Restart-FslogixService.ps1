@@ -45,6 +45,23 @@ function Write-Step {
     } | ConvertTo-Json -Compress) | Write-Output
 }
 
+
+function Read-GuestJson {
+    # The in-guest script prints one JSON object on stdout. If it printed
+    # nothing (it failed on the host), report the host's own error instead of
+    # failing on a missing regex match.
+    param($RunResult, [switch]$Raw)
+    $out = (@($RunResult.Value) | Where-Object { $_.Code -like '*StdOut*' } | ForEach-Object { $_.Message }) -join "`n"
+    $err = (@($RunResult.Value) | Where-Object { $_.Code -like '*StdErr*' } | ForEach-Object { $_.Message }) -join "`n"
+    $match = [regex]::Match([string]$out, '\{.*\}')
+    if (-not $match.Success) {
+        $detail = if ($err.Trim()) { $err.Trim() } else { 'no output' }
+        throw "The script on the host returned no result. Host error: $detail"
+    }
+    if ($Raw) { return $match.Value }
+    return ($match.Value | ConvertFrom-Json)
+}
+
 try {
     Write-Step -Phase 'auth' -Message 'Connecting with the Automation Managed Identity.'
     $null = Connect-AzAccount -Identity -ErrorAction Stop
@@ -54,7 +71,9 @@ try {
 `$svc = Get-Service -Name 'frxsvc' -ErrorAction SilentlyContinue
 if (`$null -eq `$svc) { @{ result='NotInstalled' } | ConvertTo-Json -Compress; exit 0 }
 `$pre = `$svc.Status.ToString()
-`$activeSessions = (quser 2>`$null | Select-String -Pattern 'Active').Count
+# quser writes to stderr and exits non-zero when nobody is signed in; with
+# ErrorActionPreference=Stop that is a terminating error in PowerShell 5.1.
+`$activeSessions = @(& { `$ErrorActionPreference = 'Continue'; quser 2>`$null } | Select-String -Pattern 'Active').Count
 if (`$activeSessions -gt 0 -and -not `$$($Force.IsPresent)) {
     @{ result='Refused'; pre=`$pre; activeSessions=`$activeSessions } | ConvertTo-Json -Compress; exit 0
 }
@@ -67,7 +86,7 @@ Start-Sleep -Seconds 8
     Write-Step -Phase 'remediate' -Message "Restarting frxsvc on $VmName."
     $run = Invoke-AzVMRunCommand -ResourceGroupName $ResourceGroupName -VMName $VmName `
         -CommandId 'RunPowerShellScript' -ScriptString $script
-    $json = ($run.Value[0].Message | Select-String -Pattern '\{.*\}' -AllMatches).Matches[0].Value | ConvertFrom-Json
+    $json = Read-GuestJson $run
 
     switch ($json.result) {
         'NotInstalled' {

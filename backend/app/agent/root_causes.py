@@ -474,6 +474,14 @@ CATALOGUE: dict[str, RootCauseDef] = {
             "reach rdweb.wvd.microsoft.com on 443.",
         ),
         RootCauseDef(
+            "user_session_reset_requested",
+            "User's session is stuck and needs a reset",
+            "The engineer reported the user's session as stuck and the user has a live "
+            "session on the host. Signing it out gives the user a clean session at "
+            "their next sign-in.",
+            "logoff_user_session",
+        ),
+        RootCauseDef(
             "session_host_unrecoverable_in_place",
             "Session host cannot be repaired in place",
             "In-guest remediation is not possible because the guest is unreachable, so a "
@@ -1367,9 +1375,34 @@ RULES: tuple[Rule, ...] = (
 )
 
 
-def evaluate_rules(evidence: EvidenceMap) -> list[RootCauseCandidate]:
+def rule_session_reset_requested(ev: EvidenceMap) -> RootCauseCandidate | None:
+    """Only evaluated for the stuck-session scenario: the engineer's report is
+    what makes an otherwise normal active session a problem to act on."""
+    logon = _get(ev, "get_logon_session_status")
+    if not logon or logon.data.get("hasStaleDisconnected") or logon.data.get("hasHungShell"):
+        return None  # the more specific rules handle those
+    active = [s for s in logon.data.get("sessions", []) if s.get("state") == "Active"]
+    if not active:
+        return None
+    first = active[0]
+    return _candidate(
+        "user_session_reset_requested", 0.8, Confidence.HIGH,
+        [f"The engineer reported the session stuck; "
+         f"{first.get('userPrincipalName') or first.get('userName')} has an active session "
+         f"{first.get('sessionId')} on the host ({logon.id})"],
+        [logon.id],
+    )
+
+
+# Rules that only make sense for one reported scenario.
+SCENARIO_RULES: dict[str, tuple[Rule, ...]] = {
+    "stuck_session": (rule_session_reset_requested,),
+}
+
+
+def evaluate_rules(evidence: EvidenceMap, scenario: str | None = None) -> list[RootCauseCandidate]:
     candidates: list[RootCauseCandidate] = []
-    for rule in RULES:
+    for rule in (*RULES, *SCENARIO_RULES.get(scenario or "", ())):
         try:
             candidate = rule(evidence)
         except Exception:  # noqa: BLE001 - one bad rule must not break diagnosis

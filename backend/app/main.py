@@ -20,6 +20,7 @@ from .logging_config import (
     new_correlation_id,
     set_correlation_id,
 )
+from .progress import ProgressMiddleware
 from .security.identity import PermissionDeniedError
 
 FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
@@ -55,6 +56,7 @@ app = FastAPI(
 
 app.include_router(router)
 app.include_router(mock_router)
+app.add_middleware(ProgressMiddleware)
 
 
 @app.middleware("http")

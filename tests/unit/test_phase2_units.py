@@ -99,3 +99,17 @@ async def test_user_history_tools_reject_bad_upn(container, operator: Principal)
             tool, {"userPrincipalName": "x' or 1==1 //"}, principal=operator
         )
         assert result.status is CheckStatus.ERROR
+
+
+async def test_old_heartbeat_on_available_host_is_not_stale(container, operator: Principal) -> None:  # noqa: ANN001
+    from datetime import UTC, datetime, timedelta
+
+    host = container.diagnostics.estate.find_session_host("AVD-VM-021")
+    host.last_heartbeat = datetime.now(UTC) - timedelta(hours=7)  # Azure stops refreshing it
+    result = await container.registry.invoke(
+        "get_avd_session_host_status",
+        {"vmName": "AVD-VM-021", "hostPoolName": "hp-finance-prod", "resourceGroupName": "rg-avd-prod-uks"},
+        principal=operator,
+    )
+    assert result.status is CheckStatus.HEALTHY
+    assert not result.data.get("heartbeatStale")

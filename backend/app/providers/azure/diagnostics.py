@@ -28,6 +28,7 @@ from ...config import Settings
 from ...logging_config import get_logger
 from ...security.validators import ALLOWED_SERVICES
 from ..interfaces import IDiagnosticProvider
+from . import enum_text
 
 logger = get_logger(__name__)
 
@@ -289,8 +290,6 @@ LOG_ANALYTICS_QUERIES: dict[str, str] = {
         WVDAgentHealthStatus
         | where TimeGenerated > ago({hours}h)
         | where SessionHostName startswith '{vmName}'
-        | project TimeGenerated, SessionHostName, Status=SessionHostHealthStatus,
-                  AgentVersion, LastHeartBeat, HealthCheckResult=SessionHostHealthCheckResult
         | top 10 by TimeGenerated desc
     """,
     "avd_connection_errors": """
@@ -324,6 +323,14 @@ LOG_ANALYTICS_QUERIES: dict[str, str] = {
         | summarize AvgRttMs=avg(EstRoundTripTimeInMs), P95RttMs=percentile(EstRoundTripTimeInMs, 95),
                     AvgBandwidthKBps=avg(EstAvailableBandwidthKBps), Samples=count()
     """,
+    "avd_user_last_host": """
+        WVDConnections
+        | where TimeGenerated > ago({hours}h)
+        | where UserName =~ '{userName}'
+        | where isnotempty(SessionHostName)
+        | top 1 by TimeGenerated desc
+        | project TimeGenerated, SessionHostName
+    """,
     "avd_user_clients": """
         WVDConnections
         | where TimeGenerated > ago({hours}h)
@@ -346,6 +353,14 @@ def _escape(value: str) -> str:
     """Escape a value for a PowerShell single-quoted literal. Values have
     already passed the allowlist validators; this is defence in depth."""
     return str(value).replace("'", "''")
+
+
+# How long concurrent in-guest reads for one VM are collected before they are
+# merged into a single Run Command.
+GUEST_BATCH_WINDOW_SECONDS = 0.15
+# A VM's Run Command extension stays busy briefly after each command.
+RUN_COMMAND_CONFLICT_RETRIES = 8
+RUN_COMMAND_CONFLICT_BACKOFF_SECONDS = 5
 
 
 class GraphUnavailable(RuntimeError):
@@ -372,6 +387,11 @@ class AzureDiagnosticProvider(IDiagnosticProvider):
         self._storage: Any = None
         self._resource_health: Any = None
         self._logs: Any = None
+        # Per-VM Run Command batching: a VM runs one Run Command at a time, so
+        # concurrent in-guest reads for the same VM are queued, merged into one
+        # script, and dispatched together (see _run_command).
+        self._guest_queues: dict[tuple[str, str], list[tuple[str, Any]]] = {}
+        self._guest_locks: dict[tuple[str, str], Any] = {}
         if not settings.azure_subscription_id:
             raise AzureProviderNotConfigured(
                 "AZURE_SUBSCRIPTION_ID must be set to use the Azure diagnostic provider"
@@ -464,7 +484,7 @@ class AzureDiagnosticProvider(IDiagnosticProvider):
                             {
                                 "name": fqdn.split(".")[0],
                                 "fqdn": fqdn,
-                                "status": str(getattr(h, "status", "") or ""),
+                                "status": enum_text(getattr(h, "status", None)),
                             }
                         )
                 except Exception as exc:  # noqa: BLE001
@@ -504,8 +524,8 @@ class AzureDiagnosticProvider(IDiagnosticProvider):
         return {
             "hostPoolName": pool.name,
             "resourceGroup": rg,
-            "hostPoolType": str(pool.host_pool_type),
-            "loadBalancerType": str(pool.load_balancer_type),
+            "hostPoolType": enum_text(pool.host_pool_type),
+            "loadBalancerType": enum_text(pool.load_balancer_type),
             "maxSessionLimit": pool.max_session_limit,
             "validationEnvironment": bool(pool.validation_environment),
             "registrationTokenExpiry": (
@@ -515,8 +535,8 @@ class AzureDiagnosticProvider(IDiagnosticProvider):
                 else None
             ),
             "sessionHostCount": len(hosts),
-            "availableHostCount": sum(1 for h in hosts if str(h.status) == "Available"),
-            "unavailableHostCount": sum(1 for h in hosts if str(h.status) != "Available"),
+            "availableHostCount": sum(1 for h in hosts if enum_text(h.status) == "Available"),
+            "unavailableHostCount": sum(1 for h in hosts if enum_text(h.status) != "Available"),
             "drainedHostCount": sum(1 for h in hosts if h.allow_new_session is False),
             "totalSessions": sum(h.sessions or 0 for h in hosts),
             "customRdpProperty": getattr(pool, "custom_rdp_property", None) or "",
@@ -531,11 +551,11 @@ class AzureDiagnosticProvider(IDiagnosticProvider):
             "sessionHostName": host.name.split("/")[-1],
             "vmName": host.name.split("/")[-1].split(".")[0],
             "hostPoolName": host_pool,
-            "status": str(host.status),
+            "status": enum_text(host.status),
             "allowNewSession": bool(host.allow_new_session),
             "drainModeEnabled": not bool(host.allow_new_session),
             "agentVersion": host.agent_version,
-            "updateState": str(getattr(host, "update_state", "")),
+            "updateState": enum_text(getattr(host, "update_state", None)),
             "statusTimestamp": (
                 host.status_timestamp.isoformat() if host.status_timestamp else None
             ),
@@ -803,10 +823,108 @@ class AzureDiagnosticProvider(IDiagnosticProvider):
 
     # ---- In-guest via Run Command -----------------------------------------
     async def _run_command(self, vm_name: str, resource_group: str, script: str) -> Any:
-        """Execute a fixed read-only script and parse its JSON stdout."""
+        """Execute a fixed read-only script and parse its JSON stdout.
+
+        Calls for the same VM that arrive within a short window are merged into
+        one Run Command - one ~30s round trip instead of one per check - and
+        identical scripts are run once. Event-log reads are dispatched alone,
+        because their output can be large and Run Command returns only the
+        last 4 KB of stdout.
+        """
         import asyncio
 
         rg = self._rg(resource_group)
+        key = (rg.lower(), vm_name.lower())
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        queue = self._guest_queues.setdefault(key, [])
+        queue.append((script, future))
+        if len(queue) == 1:
+            loop.create_task(self._flush_guest(key, rg, vm_name))
+        return await future
+
+    async def _flush_guest(self, key: tuple[str, str], rg: str, vm_name: str) -> None:
+        import asyncio
+
+        await asyncio.sleep(GUEST_BATCH_WINDOW_SECONDS)
+        batch = self._guest_queues.pop(key, [])
+        lock = self._guest_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            by_script: dict[str, list[Any]] = {}
+            for script, future in batch:
+                by_script.setdefault(script, []).append(future)
+            scripts = list(by_script)
+            mergeable = [sc for sc in scripts if "Get-WinEvent -LogName '" not in sc]
+            results: dict[str, Any] = {}
+            if len(mergeable) > 1:
+                results = await self._run_merged(rg, vm_name, mergeable)
+            for script in scripts:
+                if script not in results:
+                    try:
+                        results[script] = self._parse(vm_name, await self._run_raw(rg, vm_name, script))
+                    except Exception as exc:  # noqa: BLE001 - surface to every waiter
+                        for future in by_script[script]:
+                            if not future.done():
+                                future.set_exception(exc)
+                        continue
+                for future in by_script[script]:
+                    if not future.done():
+                        future.set_result(results[script])
+
+    async def _run_merged(self, rg: str, vm_name: str, scripts: list[str]) -> dict[str, Any]:
+        """One Run Command for several scripts. Anything that does not come back
+        cleanly is simply left out, and the caller runs it on its own."""
+        # Each script is carried as a here-string and compiled on its own inside
+        # try/catch, so a syntax error in one check costs only that check -
+        # inlined, a single parse error made PowerShell reject the whole batch.
+        # The bodies are this module's own fixed scripts, never caller input.
+        lines = ["$__results = @{}"]
+        for index, script in enumerate(scripts):
+            body = script.replace("exit 0", "return")
+            lines.append(f"$__b{index} = @'\n{body}\n'@")
+            # Windows PowerShell 5.1: try is a statement, not an expression.
+            lines.append(
+                f"try {{ $__results['k{index}'] = (& ([scriptblock]::Create($__b{index})) | Out-String).Trim() }} "
+                f"catch {{ $__results['k{index}'] = '' }}"
+            )
+        lines.append("$__results | ConvertTo-Json -Compress")
+        try:
+            raw = await self._run_raw(rg, vm_name, "\n".join(lines))
+            outer = json.loads(raw) if raw else {}
+        except Exception as exc:  # noqa: BLE001 - fall back to one call per script
+            logger.info("run_command_merge_fallback", vm=vm_name, scripts=len(scripts), error=str(exc)[:200])
+            return {}
+        merged: dict[str, Any] = {}
+        for index, script in enumerate(scripts):
+            inner = outer.get(f"k{index}") if isinstance(outer, dict) else None
+            if not inner:
+                continue
+            try:
+                merged[script] = json.loads(inner)
+            except json.JSONDecodeError:
+                continue
+        logger.info("run_command_merged", vm=vm_name, scripts=len(scripts), merged=len(merged))
+        return merged
+
+    async def _run_raw(self, rg: str, vm_name: str, script: str) -> str:
+        """One Run Command. Azure keeps the VM's Run Command extension busy for a
+        few seconds after a command completes and rejects the next one with
+        409 Conflict, so that case is retried with a short backoff."""
+        import asyncio
+
+        for attempt in range(RUN_COMMAND_CONFLICT_RETRIES + 1):
+            try:
+                return await self._run_raw_once(rg, vm_name, script)
+            except Exception as exc:  # noqa: BLE001 - only Conflict is retried
+                conflict = getattr(exc, "status_code", None) == 409 or "Conflict" in str(exc)[:200]
+                if not conflict or attempt == RUN_COMMAND_CONFLICT_RETRIES:
+                    raise
+                logger.info("run_command_busy_retry", vm=vm_name, attempt=attempt + 1)
+                await asyncio.sleep(RUN_COMMAND_CONFLICT_BACKOFF_SECONDS)
+        raise RuntimeError("unreachable")
+
+    async def _run_raw_once(self, rg: str, vm_name: str, script: str) -> str:
+        import asyncio
 
         def _invoke() -> str:
             poller = self.compute.virtual_machines.begin_run_command(
@@ -830,7 +948,10 @@ class AzureDiagnosticProvider(IDiagnosticProvider):
                     stdout += value.message or ""
             return stdout.strip()
 
-        raw = await asyncio.to_thread(_invoke)
+        return await asyncio.to_thread(_invoke)
+
+    @staticmethod
+    def _parse(vm_name: str, raw: str) -> Any:
         if not raw:
             return None
         try:
@@ -873,7 +994,10 @@ class AzureDiagnosticProvider(IDiagnosticProvider):
     async def get_fslogix_status(
         self, vm_name: str, upn: str | None, resource_group: str | None
     ) -> dict[str, Any]:
-        data = await self._run_command(vm_name, self._rg(resource_group), _PS_FSLOGIX)
+        # .format() turns the template's doubled {{ }} into PowerShell braces.
+        # Sending the raw template was a parse error on every host, so this
+        # check returned nothing and FSLogix looked healthy on no data.
+        data = await self._run_command(vm_name, self._rg(resource_group), _PS_FSLOGIX.format())
         data = data or {"services": [], "profiles": []}
         profiles = data.get("profiles", [])
         return {
@@ -1080,7 +1204,7 @@ class AzureDiagnosticProvider(IDiagnosticProvider):
         def _read() -> dict[str, Any]:
             groups = []
             for group in self.avd.application_groups.list_by_resource_group(rg):
-                if "remoteapp" not in str(group.application_group_type).lower():
+                if "remoteapp" not in enum_text(group.application_group_type).lower():
                     continue
                 if (group.host_pool_arm_path or "").split("/")[-1].lower() != host_pool.lower():
                     continue

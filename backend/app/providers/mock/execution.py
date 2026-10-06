@@ -14,6 +14,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from ... import progress
 from ...logging_config import get_logger
 from ..interfaces import IExecutionProvider
 from .estate import MockEstate, SessionHost, get_estate
@@ -195,7 +196,7 @@ def _logoff_user(estate: MockEstate, params: dict[str, Any], out: list[str]) -> 
         return 3
     upn = str(params.get("UserPrincipalName", "")).lower()
     mode = str(params.get("Mode", ""))
-    min_idle = int(params.get("MinimumDisconnectedMinutes", 30))
+    min_idle = int(params.get("MinimumDisconnectedMinutes", 0))
     host = estate.find_session_host(vm.name)
     session = next(
         (s for s in (host.user_sessions if host else []) if s.upn.lower() == upn), None
@@ -229,9 +230,11 @@ def _logoff_user(estate: MockEstate, params: dict[str, Any], out: list[str]) -> 
                 "No session was signed out."
             )
             return 12
-        if snap["sessionAgeMinutes"] < 5:
-            out.append("REFUSED: the session is under 5 minutes old and may still be loading.")
+        if snap["sessionAgeMinutes"] < 2:
+            out.append("REFUSED: the session is under 2 minutes old and may still be loading.")
             return 13
+    elif mode == "Any":
+        out.append(f"Engineer-approved sign-out of a {session.state.lower()} session.")
     else:
         out.append(f"ERROR: unknown mode '{mode}'")
         return 2
@@ -399,8 +402,12 @@ class MockExecutionProvider(IExecutionProvider):
                 return self._finish(job_id, 126, output, started, "target scope violation")
 
         try:
+            progress.emit("job", "Automation job Queued")
             await asyncio.wait_for(asyncio.sleep(0.02), timeout=timeout_seconds)
+            progress.emit("job", "Automation job Running")
             exit_code = handler(self._estate, parameters, output)
+            progress.emit("job", "Automation job " + ("Completed" if exit_code == 0 else "Failed"),
+                          "healthy" if exit_code == 0 else "unhealthy")
         except TimeoutError:
             output.append("ERROR: runbook job timed out")
             return self._finish(job_id, 124, output, started, "timeout")

@@ -97,6 +97,9 @@ async function loadEnvironment() {
     const canApprove = me.permissions.includes("remediation.approve");
     add(canApprove ? "may approve" : "read-only role", canApprove ? "ok" : "warn");
     $("reset-estate").hidden = caps.mode !== "mock";
+    // Demo example buttons fill in names that exist only in the simulated estate.
+    const examples = document.querySelector(".examples");
+    if (examples) examples.hidden = caps.mode !== "mock";
   } catch (error) {
     badges.replaceChildren();
     badges.appendChild(el("span", "badge bad", `backend unreachable: ${error.message}`));
@@ -111,8 +114,27 @@ async function investigate() {
   button.disabled = true;
   button.textContent = "Investigating…";
 
+  // No description: run a full health check on whatever was selected, so
+  // picking a host or a user is enough for the agent to find what is wrong.
+  const host = $("session_host").value.trim();
+  const upn = $("user_principal_name").value.trim();
+  const pool = $("host_pool").value.trim();
+  let description = $("description").value.trim();
+  if (!description) {
+    if (host) description = `Full health check of session host ${host}`;
+    else if (upn) description = `Full health check for user ${upn}`;
+    else if (pool) description = `Full health check of host pool ${pool}`;
+  }
+  if (!description) {
+    error.textContent = "Pick a session host, a user or a host pool - or describe the problem.";
+    error.hidden = false;
+    button.disabled = false;
+    button.textContent = "Investigate";
+    return;
+  }
+
   const payload = {
-    description: $("description").value.trim(),
+    description,
     user_principal_name: $("user_principal_name").value.trim() || null,
     host_pool: $("host_pool").value.trim() || null,
     session_host: $("session_host").value.trim() || null,
@@ -459,6 +481,5 @@ document.addEventListener("DOMContentLoaded", () => {
     currentIncident = null;
     await loadEnvironment();
   });
-  const example = EXAMPLES.agent;
-  Object.entries(example).forEach(([key, value]) => { if ($(key)) $(key).value = value; });
+  // The form starts empty: nothing is pre-filled with demo names.
 });

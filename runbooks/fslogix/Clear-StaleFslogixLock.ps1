@@ -14,8 +14,8 @@
     Refusal conditions (the runbook exits non-zero WITHOUT changing anything):
       * the user still has an active or disconnected session anywhere in the
         host pool - log them off first;
-      * the SMB handle is younger than -MinimumLockAgeMinutes (default 15),
-        because a young handle is probably a live sign-in in progress;
+      * the SMB handle is younger than -MinimumLockAgeMinutes (default 0, i.e.
+        no wait - the session check above already rules out a live sign-in);
       * more than one handle is open on the container from different hosts.
 
 .NOTES
@@ -49,8 +49,8 @@ param(
     [string]$HostPoolName,
 
     [Parameter()]
-    [ValidateRange(5, 240)]
-    [int]$MinimumLockAgeMinutes = 15,
+    [ValidateRange(0, 240)]
+    [int]$MinimumLockAgeMinutes = 0,
 
     [Parameter()]
     [string]$CorrelationId = [guid]::NewGuid().ToString()

@@ -8,10 +8,13 @@ traces, and never leak configuration or secrets.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import StreamingResponse
 
+from .. import progress
 from ..agent import OrchestratorError
 from ..approval import ApprovalError
 from ..config import RunMode
@@ -189,15 +192,33 @@ async def chat(
 
     turn = await container.chat.respond(messages=messages, principal=principal, incident=incident)
 
-    # "Tell me why X is broken" -> run the same playbook the form runs. The model
-    # picked the target; the orchestrator still decides everything after that.
+    # "Fix it" with no plan on the table: there is nothing to approve yet, so run
+    # the investigation now instead of asking for an approval that cannot happen.
+    if turn.get("action") == "propose_fix" and (incident is None or incident.remediation is None):
+        user_text = " ".join(m.get("content", "") for m in messages if m.get("role") == "user")[-1000:]
+        turn["action"] = "investigate"
+        turn["target"] = {"description": user_text}
+
+    # "Tell me why X is broken" -> run the same playbook the form runs.
+    #
+    # The model may only pass on names the engineer actually typed in THIS
+    # message. A host it remembers from earlier in the conversation is stale:
+    # the user may have signed in somewhere else since (that is how a temp
+    # profile on vm-02 got investigated on vm-01). Without a typed host, the
+    # orchestrator finds it from the user's live session.
     if turn.get("action") == "investigate":
         target = turn.get("target") or {}
+        said = _last_user_message(messages).lower()
+
+        def typed(value: Any) -> str | None:
+            text = str(value or "").strip()
+            return text if text and text.split(".")[0].lower() in said else None
+
         request = InvestigateRequest(
             description=target.get("description") or _last_user_message(messages),
-            session_host=target.get("session_host"),
-            host_pool=target.get("host_pool"),
-            resource_group=target.get("resource_group"),
+            session_host=typed(target.get("session_host")),
+            host_pool=typed(target.get("host_pool")),
+            resource_group=typed(target.get("resource_group")),
             user_principal_name=target.get("user_principal_name"),
         )
         try:
@@ -217,9 +238,13 @@ async def chat(
             }
         incident_id = incident.id
 
+    reply = turn.get("reply", "")
+    if incident is not None and turn.get("action") in ("propose_fix", "investigate"):
+        reply = _approval_status(incident, principal, container.settings.remediation_enabled) or reply
+
     view = IncidentView.from_incident(incident).model_dump() if incident is not None else None
     return {
-        "reply": turn.get("reply", ""),
+        "reply": reply,
         "activity": turn.get("activity", []),
         "action": turn.get("action", "answer"),
         "incident_id": incident_id,
@@ -230,11 +255,67 @@ async def chat(
     }
 
 
+def _approval_status(incident: Any, principal: Principal, remediation_enabled: bool) -> str | None:
+    """Plain-language next step after an investigation, so the engineer is never
+    left typing "approve" at a plan that cannot run. Approval itself only ever
+    happens through the Approve button (POST /approval) - never from chat text."""
+    plan = incident.remediation
+    if incident.target is None:
+        missing = next((n for n in incident.notes if n.startswith("No session found")), None)
+        if missing:
+            return missing
+    root = incident.diagnosis.root_cause if incident.diagnosis else None
+    cause = root.title if root else None
+    where = incident.target.resource_name if incident.target else None
+    if cause and where:
+        cause = f"{cause} (on {where})"
+    if root is None and where:
+        checks = sum(1 for step in incident.plan_steps if step.evidence is not None)
+        return (f"I checked {where} ({checks} checks) and found no fault right now. If the user is "
+                "still affected, have them sign in again and tell me what they see.")
+    if plan is None:
+        guidance = next((n for n in incident.notes if n.startswith("Manual next step:")), None)
+        if cause and guidance:
+            step = guidance[len("Manual next step: "):]
+            return f"Found it: {cause}. There is no automatic fix for this - {step}"
+        return None
+    if plan.blocked:
+        if not remediation_enabled:
+            return (f"Found it: {cause}. The fix is '{plan.title}', but remediation is disabled in this "
+                    "environment. Set REMEDIATION_ENABLED=true in .env and restart the agent.")
+        return f"Found it: {cause}. The fix '{plan.title}' is blocked: {plan.blocked_reason}"
+    if incident.state.value == "awaiting_approval":
+        if not principal.has(Permission.REMEDIATION_APPROVE):
+            return (f"Found it: {cause}. The fix is '{plan.title}'. You are in Read-only mode - switch "
+                    "to Troubleshoot (top right) and click Approve on the card to run it now.")
+        return (f"Found it: {cause}. Click Approve on the card below to run '{plan.title}' now - "
+                "it executes immediately and I verify the result.")
+    return None
+
+
 def _last_user_message(messages: list[dict[str, str]]) -> str:
     for message in reversed(messages):
         if message.get("role") == "user":
             return message.get("content", "")
     return ""
+
+
+@router.get("/progress/{channel}")
+async def progress_stream(channel: str, principal: Principal = Depends(get_principal)) -> StreamingResponse:
+    """Live progress for one console request, as Server-Sent Events."""
+    principal.require(Permission.DIAGNOSTICS_READ)
+    if not progress.valid_channel(channel):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid progress channel")
+
+    async def events() -> Any:
+        async for event in progress.BUS.stream(channel):
+            yield f"data: {json.dumps(event, default=str)}\n\n"
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.get("/estate")

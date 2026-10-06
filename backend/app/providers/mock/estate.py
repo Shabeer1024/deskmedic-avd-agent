@@ -104,6 +104,9 @@ class UserSession:
     explorer_running: bool = True       # False on a black screen: shell never started
     logon_ui_running: bool = False
     group_policy_seconds: int = 6
+    # False for a direct RDP sign-in that never went through the AVD broker:
+    # visible inside the VM (quser) but not in the AVD user-sessions API.
+    via_broker: bool = True
 
     def snapshot(self) -> dict[str, Any]:
         now = _now()
@@ -380,6 +383,8 @@ class MockEstate:
         self.network_quality: dict[str, dict[str, Any]] = {}
         # WVDConnections client rows keyed by UPN.
         self.client_connections: dict[str, list[dict[str, Any]]] = {}
+        # Last host each user connected to (WVDConnections), keyed by UPN.
+        self.last_hosts: dict[str, str] = {}
         self.seed_default()
 
     # ---- lookup helpers ----------------------------------------------------

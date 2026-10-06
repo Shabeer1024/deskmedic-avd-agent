@@ -386,3 +386,22 @@ footer { padding: 18px 24px 30px; text-align: center; font-size: 12px; color: va
   .user-text { display: none; }
   .msg.user .bubble, .msg.agent .bubble { max-width: 100%; }
 }
+
+/* ===================================================== live progress ==== */
+.act-now {
+  margin: -4px 0 10px; padding: 8px 10px;
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  background: var(--panel-2); font-size: 12px; font-weight: 600; color: var(--text);
+}
+.act-now.running  { border-color: #24406e; color: #bcd4ff; }
+.act-now.running::before {
+  content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 8px;
+  border-radius: 50%; background: var(--accent); vertical-align: middle;
+  animation: pulse 1s ease-in-out infinite;
+}
+.act-now.healthy  { border-color: #14532d; color: #86efac; }
+.act-now.unhealthy { border-color: #7f1d1d; color: #fca5a5; }
+.act-now.degraded { border-color: #713f12; color: #fcd34d; }
+.act.running .act-tool::after { content: " …"; animation: pulse 1s ease-in-out infinite; }
+.stepper li.is-failed b { background: #260d0d; border-color: #7f1d1d; color: #fca5a5; }
+.stepper li.is-current strong { color: #bcd4ff; }

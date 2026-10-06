@@ -17,9 +17,11 @@ Key invariants enforced here rather than trusted to the model:
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from typing import Any
 
+from .. import progress
 from ..approval import ApprovalService
 from ..config import Settings
 from ..knowledge import IKnowledgeRetriever, tags_for_scenario
@@ -56,6 +58,8 @@ from .triage import TriageService
 logger = get_logger(__name__)
 
 DEFAULT_RESOURCE_GROUP = "rg-avd-prod-uks"
+# Above this many hosts, a user with no AVD session is not searched host by host.
+MAX_HOSTS_TO_SEARCH = 12
 DEFAULT_HOST_POOL = "hp-finance-prod"
 
 
@@ -139,6 +143,7 @@ class AgentOrchestrator:
         )
 
         # ---- triage -------------------------------------------------------
+        progress.emit("stage", "Understanding the problem")
         triage = await self._triage.triage(description, context)
         incident.scenario = triage.scenario
         incident.scenario_confidence = triage.confidence
@@ -154,6 +159,7 @@ class AgentOrchestrator:
                 detail={"origin": "engineer_description"},
             )
 
+        progress.emit("stage", f"Issue type: {incident.scenario.value.replace('_', ' ')}", "healthy")
         await self._locate_user_host(incident, principal)
         await self._default_single_pool(incident)
         await self._pool_from_assignments(incident, principal)
@@ -178,42 +184,35 @@ class AgentOrchestrator:
             await self._store.save(incident)
             return incident
 
+        # Steps run in waves: every step whose precondition holds on the evidence
+        # gathered so far runs concurrently, then the rest are re-evaluated. A
+        # playbook's preconditions only read earlier unconditional checks (VM
+        # state, user assignment), so the result matches running them one by
+        # one - just without waiting on each Azure call in turn. In-guest calls
+        # to the same VM are merged or serialized by the provider.
+        where = incident.target.resource_name if incident.target else "the environment"
+        progress.emit("stage", f"Running {len(planned)} checks on {where}")
         collected: dict[str, Evidence] = {}
-        for order, step in enumerate(planned, start=1):
-            record = InvestigationStep(
-                order=order,
-                stage=step.stage,
-                tool=step.tool,
-                parameters={k: v for k, v in step.parameters.items() if v is not None},
-                required=step.required,
+        records: list[InvestigationStep] = []
+        pending = list(enumerate(planned, start=1))
+        while pending:
+            ready = [(o, s) for o, s in pending if s.when is None or s.when(collected)]
+            if not ready:
+                for order, step in pending:
+                    records.append(self._step_record(order, step, skipped=step.skip_reason))
+                break
+            pending = [(o, s) for o, s in pending if (o, s) not in ready]
+            done = await asyncio.gather(
+                *(self._run_step(order, step, principal, incident.id) for order, step in ready)
             )
-            if step.when is not None and not step.when(collected):
-                record.skipped_reason = step.skip_reason
-                incident.plan_steps.append(record)
-                continue
+            for (_, step), record in zip(ready, done, strict=True):
+                records.append(record)
+                collected[step.tool] = record.evidence
 
-            result = await self._registry.invoke(
-                step.tool,
-                record.parameters,
-                principal=principal,
-                incident_id=incident.id,
-            )
-            evidence = Evidence(
-                id=f"E{order:02d}",
-                stage=step.stage,
-                tool=step.tool,
-                parameters=record.parameters,
-                status=result.status,
-                summary=result.summary,
-                data=result.data,
-                trusted=not result.contains_untrusted_text,
-                duration_ms=result.duration_ms,
-                error=result.error,
-            )
-            record.evidence = evidence
+        for record in sorted(records, key=lambda r: r.order):
             incident.plan_steps.append(record)
-            incident.evidence.append(evidence)
-            collected[step.tool] = evidence
+            if record.evidence is not None:
+                incident.evidence.append(record.evidence)
 
         # ---- knowledge + history ------------------------------------------
         hits = self._knowledge.search(
@@ -238,8 +237,9 @@ class AgentOrchestrator:
         ]
 
         # ---- diagnose ------------------------------------------------------
+        progress.emit("stage", "Finding the root cause")
         diagnosis, injection_notes = await self._diagnosis.diagnose(
-            incident.evidence, incident_description=description
+            incident.evidence, incident_description=description, scenario=incident.scenario.value
         )
         incident.diagnosis = diagnosis
         incident.notes.extend(injection_notes)
@@ -264,6 +264,11 @@ class AgentOrchestrator:
             },
         )
 
+        progress.emit(
+            "stage",
+            f"Root cause: {diagnosis.root_cause.title}" if diagnosis.root_cause else "No root cause found",
+            "unhealthy" if diagnosis.root_cause else "healthy",
+        )
         if diagnosis.root_cause is None:
             incident.touch(IncidentState.NEEDS_MORE_INVESTIGATION)
             await self._store.save(incident)
@@ -331,6 +336,7 @@ class AgentOrchestrator:
         if plan.requires_approval:
             await self._approvals.request(plan, incident.id, principal.upn)
             incident.touch(IncidentState.AWAITING_APPROVAL)
+            progress.emit("stage", f"Fix ready: {plan.title} - waiting for your approval", "degraded")
         else:
             incident.touch(IncidentState.DIAGNOSED)
 
@@ -394,6 +400,7 @@ class AgentOrchestrator:
             raise OrchestratorError(recheck.blocked_reason or "Execution refused by policy.")
 
         approval = await self._approvals.consume(plan_id, token)
+        progress.emit("stage", f"Approved by {approval.approver} - running {plan.script_name}")
 
         incident.touch(IncidentState.EXECUTING)
         execution_id = f"EXE-{uuid.uuid4().hex[:12]}"
@@ -463,12 +470,26 @@ class AgentOrchestrator:
         )
 
         # ---- verification is mandatory, success or failure ----------------
+        progress.emit(
+            "stage",
+            "Runbook finished - verifying the fix"
+            if record.succeeded
+            else "Runbook failed - checking current state",
+            "healthy" if record.succeeded else "unhealthy",
+        )
         incident.touch(IncidentState.VERIFYING)
         result = await self._verification.verify(
             plan, principal=principal, incident_id=incident.id
         )
         incident.verification = result
 
+        progress.emit(
+            "stage",
+            "Resolved - verified fixed"
+            if record.succeeded and result.passed
+            else "Not fixed - see the checks",
+            "healthy" if record.succeeded and result.passed else "unhealthy",
+        )
         if record.succeeded and result.passed:
             incident.touch(IncidentState.RESOLVED)
             await self._remember(incident)
@@ -511,6 +532,39 @@ class AgentOrchestrator:
             raise OrchestratorError(f"Incident '{incident_id}' not found.")
         return incident
 
+    @staticmethod
+    def _step_record(order: int, step: Any, skipped: str | None = None) -> InvestigationStep:
+        record = InvestigationStep(
+            order=order,
+            stage=step.stage,
+            tool=step.tool,
+            parameters={k: v for k, v in step.parameters.items() if v is not None},
+            required=step.required,
+        )
+        record.skipped_reason = skipped
+        return record
+
+    async def _run_step(
+        self, order: int, step: Any, principal: Principal, incident_id: str
+    ) -> InvestigationStep:
+        record = self._step_record(order, step)
+        result = await self._registry.invoke(
+            step.tool, record.parameters, principal=principal, incident_id=incident_id
+        )
+        record.evidence = Evidence(
+            id=f"E{order:02d}",
+            stage=step.stage,
+            tool=step.tool,
+            parameters=record.parameters,
+            status=result.status,
+            summary=result.summary,
+            data=result.data,
+            trusted=not result.contains_untrusted_text,
+            duration_ms=result.duration_ms,
+            error=result.error,
+        )
+        return record
+
     async def _locate_user_host(self, incident: Incident, principal: Principal) -> None:
         """When the engineer names only a user, find the host from the user's
         own live session - a read-only broker lookup, audited like any tool call.
@@ -530,10 +584,7 @@ class AgentOrchestrator:
         )
         sessions = result.data.get("sessions", []) if result.status is not CheckStatus.ERROR else []
         if not sessions:
-            incident.notes.append(
-                f"No session found for {context.user_principal_name}, so no session host could be "
-                "located from the user alone. Supply the session host to investigate it."
-            )
+            await self._find_user_without_broker_session(incident, principal)
             return
 
         chosen = _preferred_session(incident.scenario, sessions)
@@ -550,6 +601,95 @@ class AgentOrchestrator:
             f"(host pool {context.host_pool}) from their current session."
             + (f" They also have sessions on {', '.join(others)}." if others else "")
         )
+
+    async def _find_user_without_broker_session(self, incident: Incident, principal: Principal) -> None:
+        """The AVD service has no session for the user. Look further before
+        giving up: (1) a sign-in visible inside a host - direct RDP never goes
+        through the broker; (2) the host they last connected to, for a user who
+        has signed out since. Every lookup is a read-only, audited tool call."""
+        context = incident.context
+        upn = context.user_principal_name
+        assert upn
+
+        hosts = await self._hosts_to_search(incident, principal)
+        if hosts:
+            results = await asyncio.gather(*(
+                self._registry.invoke(
+                    "get_logon_session_status",
+                    {"vmName": vm, "resourceGroupName": rg, "userPrincipalName": upn},
+                    principal=principal, incident_id=incident.id,
+                )
+                for vm, _, rg in hosts
+            ))
+            found = [
+                (host, r) for host, r in zip(hosts, results, strict=True)
+                if r.status is not CheckStatus.ERROR and r.data.get("userSessionCount")
+            ]
+            if found:
+                active = [
+                    f for f in found
+                    if any(s.get("state") == "Active" for s in f[1].data.get("sessions", []))
+                ]
+                (vm, pool, rg), _ = (active or found)[0]
+                self._set_host(context, vm, pool, rg)
+                incident.notes.append(
+                    f"Located {upn} on session host {vm} (host pool {pool}) from a sign-in on the host "
+                    "itself - this session did not go through the AVD service (e.g. direct RDP)."
+                )
+                return
+
+        last = await self._registry.invoke(
+            "get_user_last_host", {"userPrincipalName": upn, "hours": 24},
+            principal=principal, incident_id=incident.id,
+        )
+        if last.status is CheckStatus.HEALTHY and last.data.get("vmName"):
+            vm = last.data["vmName"]
+            match = next((h for h in hosts if h[0].lower() == vm.lower()), None)
+            self._set_host(context, vm, match[1] if match else None, match[2] if match else None)
+            incident.notes.append(
+                f"{upn} is not signed in now. Investigating {vm}, the host they last connected to "
+                f"({last.data.get('lastSeen')})."
+            )
+            return
+
+        incident.notes.append(
+            f"No session found for {upn} - not in the AVD service, not signed in on any host, and no "
+            "recent connection in Log Analytics. Tell me the session host (or have the user sign in "
+            "again) and I will investigate it."
+        )
+
+    async def _hosts_to_search(self, incident: Incident, principal: Principal) -> list[tuple[str, str, str]]:
+        """(vm, pool, resource group) for the user's pool - or every host when
+        the estate is small enough to sweep in one go."""
+        provider = getattr(self._registry.get("get_host_pool_status"), "provider", None)
+        if provider is None:
+            return []
+        try:
+            pools = (await provider.discover_estate()).get("host_pools", [])
+        except Exception:  # noqa: BLE001 - discovery is an assist, never a gate
+            return []
+        wanted = incident.context.host_pool
+        if not wanted:
+            assignment = await self._registry.invoke(
+                "get_user_assignments", {"userPrincipalName": incident.context.user_principal_name},
+                principal=principal, incident_id=incident.id,
+            )
+            assigned = {g.get("hostPoolName") for g in assignment.data.get("applicationGroups", [])
+                        if g.get("userAssigned")}
+            if len(assigned) == 1:
+                wanted = assigned.pop()
+        hosts = [
+            (h["name"], p["name"], p["resource_group"])
+            for p in pools if not wanted or p["name"].lower() == wanted.lower()
+            for h in p.get("session_hosts", [])
+        ]
+        return hosts if len(hosts) <= MAX_HOSTS_TO_SEARCH else []
+
+    @staticmethod
+    def _set_host(context: IncidentContext, vm: str, pool: str | None, rg: str | None) -> None:
+        context.session_host = vm
+        context.host_pool = context.host_pool or pool
+        context.resource_group = context.resource_group or rg
 
     async def _default_single_pool(self, incident: Incident) -> None:
         """With no host pool named and exactly one in the subscription, use it.

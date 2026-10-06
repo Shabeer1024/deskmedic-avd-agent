@@ -31,6 +31,9 @@ _HOSTPOOL_PATTERN = re.compile(r"\b((?:hp|hostpool|pool)[-_][A-Za-z0-9-]{2,60})\
 _UPN_PATTERN = re.compile(r"\b([A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,190}\.[A-Za-z]{2,24})\b")
 
 _KEYWORDS: tuple[tuple[Scenario, tuple[str, ...], int], ...] = (
+    # Outweighs every symptom keyword: "health check of session host X" is a
+    # request to sweep X, not a report that X is unavailable.
+    (Scenario.HEALTH_CHECK, ("health check", "healthcheck", "check everything"), 20),
     (Scenario.SSO_AUTHENTICATION,
      ("sso ", " sso", "single sign-on", "single sign on", "password prompt", "asks for password",
       "asked for password", "prompted for credentials", "credential prompt", "mfa", "multi-factor",
@@ -78,7 +81,10 @@ _KEYWORDS: tuple[tuple[Scenario, tuple[str, ...], int], ...] = (
       "stuck on welcome", "stuck at please wait", "no taskbar", "explorer", "appreadiness",
       "app readiness"), 4),
     (Scenario.STUCK_SESSION,
-     ("stuck session", "session stuck", "orphaned session", "disconnected session", "hung session",
+     ("stuck session", "session stuck", "session is stuck", "orphaned session", "disconnected session",
+      "hung session", "clear the session", "clear session", "clear his session", "clear her session",
+      "reset the session", "reset session", "sign out the session", "sign the user out", "log the user off",
+      "log off the user", "logoff the user",
       "can't reconnect", "cannot reconnect", "unable to reconnect", "won't reconnect", "log off",
       "logoff", "sign out the session", "session limit"), 4),
     (Scenario.HOST_NOT_REGISTERING,

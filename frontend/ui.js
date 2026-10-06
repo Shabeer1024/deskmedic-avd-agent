@@ -208,11 +208,7 @@
         note.hidden = false;
       }
 
-      // If exactly one pool exists, preselect it - the common case in a lab.
-      const poolInput = byId("host_pool");
-      if (poolInput && pools.length === 1 && !poolInput.value.trim()) {
-        poolInput.value = pools[0].name;
-      }
+      // Nothing is preselected: the form stays empty until a value is chosen.
       applyPoolSelection();
     } catch (error) {
       if (note) {
@@ -223,6 +219,31 @@
     }
   }
 
+  /** Choosing a session host fills in its host pool and resource group, so
+   *  one selection is enough to investigate. */
+  function applyHostSelection() {
+    const hostInput = byId("session_host");
+    if (!hostInput || !ESTATE) return;
+    const name = hostInput.value.trim().toLowerCase();
+    if (!name) return;
+    const pool = (ESTATE.host_pools || []).find((p) =>
+      (p.session_hosts || []).some((h) => h.name.toLowerCase() === name || (h.fqdn || "").toLowerCase() === name),
+    );
+    if (!pool) return;
+    const poolInput = byId("host_pool");
+    const rgInput = byId("resource_group");
+    if (poolInput && (!poolInput.value.trim() || poolInput.dataset.auto === "1")) {
+      poolInput.value = pool.name;
+      poolInput.dataset.auto = "1";
+    }
+    if (rgInput && (!rgInput.value.trim() || rgInput.dataset.auto === "1")) {
+      rgInput.value = pool.resource_group;
+      rgInput.dataset.auto = "1";
+    }
+  }
+
+  byId("session_host")?.addEventListener("change", applyHostSelection);
+  byId("session_host")?.addEventListener("input", applyHostSelection);
   byId("host_pool")?.addEventListener("input", applyPoolSelection);
   byId("host_pool")?.addEventListener("change", applyPoolSelection);
   byId("resource_group")?.addEventListener("input", (e) => {

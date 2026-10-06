@@ -212,6 +212,7 @@ def _extract_payload(user_content: str) -> dict[str, Any]:
 
 
 _SCENARIO_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("health_check", ("health check", "healthcheck", "check everything")),
     ("thin_client", ("thin client", "thinos", "wyse", "igel")),
     ("sso_authentication", ("sso ", " sso", "single sign", "password prompt", "mfa", "conditional access")),
     ("client_side", ("windows app", "remote desktop client", "msrdc", "subscribe", "web client")),
@@ -227,7 +228,9 @@ _SCENARIO_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("performance", ("high cpu", "high memory", "sluggish", "laggy", "freezing")),
     ("network_endpoints", ("required url", "proxy", "firewall", "private dns", "private link")),
     ("black_screen", ("black screen", "blank screen", "stuck at welcome", "explorer", "appreadiness")),
-    ("stuck_session", ("stuck session", "orphaned session", "disconnected session", "reconnect", "logoff")),
+    ("stuck_session", ("stuck session", "session is stuck", "clear the session", "clear session",
+                       "reset the session", "orphaned session", "disconnected session", "reconnect",
+                       "logoff")),
     ("host_not_registering", ("not registering", "not registered", "registration token", "re-register")),
     ("pending_reboot", ("pending reboot", "reboot pending", "restart pending", "windows update", "patching")),
     ("time_sync",

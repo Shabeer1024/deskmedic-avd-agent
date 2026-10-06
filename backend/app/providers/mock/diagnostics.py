@@ -116,7 +116,7 @@ class MockDiagnosticProvider(IDiagnosticProvider):
                     }
                 )
             for logon in host.user_sessions:
-                if logon.upn.lower() != upn.lower():
+                if logon.upn.lower() != upn.lower() or not logon.via_broker:
                     continue
                 sessions.append(
                     {
@@ -625,6 +625,11 @@ class MockDiagnosticProvider(IDiagnosticProvider):
         user = str(parameters.get("userName", "")).lower()
         if query_id == "avd_user_connection_errors":
             return list(self._estate.connection_errors.get(user, []))
+        if query_id == "avd_user_last_host":
+            vm = self._estate.last_hosts.get(user)
+            if not vm:
+                return []
+            return [{"SessionHostName": f"{vm}.contoso.com", "TimeGenerated": datetime.now(UTC).isoformat()}]
         if query_id == "avd_user_clients":
             return list(self._estate.client_connections.get(user, []))
         if query_id == "avd_user_network_quality":

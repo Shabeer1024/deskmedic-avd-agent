@@ -62,14 +62,24 @@ class VerificationService:
         principal: Principal,
         incident_id: str,
     ) -> list[VerificationCheck]:
-        """Execute each check and record what was observed. Checks are read-only."""
+        """Execute each check and record what was observed. Checks are read-only.
+
+        Checks in one call that ask the same tool the same question share one
+        observation (several checks often assert different fields of a single
+        FSLogix or session read). Each call to run_checks reads fresh: nothing
+        is reused between the pre-checks and the post-checks.
+        """
+        import json
+
+        observed: dict[str, Any] = {}
         for check in checks:
-            result = await self._registry.invoke(
-                check.tool,
-                {k: v for k, v in check.parameters.items() if v is not None},
-                principal=principal,
-                incident_id=incident_id,
-            )
+            params = {k: v for k, v in check.parameters.items() if v is not None}
+            key = f"{check.tool}:{json.dumps(params, sort_keys=True, default=str)}"
+            if key not in observed:
+                observed[key] = await self._registry.invoke(
+                    check.tool, params, principal=principal, incident_id=incident_id
+                )
+            result = observed[key]
             check.observed_at = utcnow()
             if check.expected_field == STATUS_FIELD:
                 check.observed_value = result.status.value

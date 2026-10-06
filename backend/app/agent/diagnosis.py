@@ -38,11 +38,11 @@ class DiagnosisEngine:
         self._llm = llm
 
     async def diagnose(
-        self, evidence: list[Evidence], *, incident_description: str
+        self, evidence: list[Evidence], *, incident_description: str, scenario: str | None = None
     ) -> tuple[Diagnosis, list[str]]:
         """Returns the diagnosis and any prompt-injection findings observed."""
         evidence_map = {e.tool: e for e in evidence if e.status is not None}
-        candidates = evaluate_rules(evidence_map)
+        candidates = evaluate_rules(evidence_map, scenario)
         injection_notes = self._scan_evidence(evidence)
 
         errored = [e for e in evidence if e.status.value == "error"]

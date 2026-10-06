@@ -65,6 +65,111 @@
   function resetActivity() {
     activity.replaceChildren();
     activity.appendChild(node("li", "idle", "Nothing running."));
+    setNow("");
+  }
+
+  /* --------------------------------------------------------- live progress */
+  // A "Now:" line above the activity list shows the step in flight.
+  const now = (() => {
+    let el = byId("activity-now");
+    if (!el) {
+      el = node("div", "act-now");
+      el.id = "activity-now";
+      activity.parentNode.insertBefore(el, activity);
+    }
+    return el;
+  })();
+
+  function setNow(text, status) {
+    now.textContent = text ? `Now: ${text}` : "";
+    now.className = `act-now ${status || "running"}`;
+    now.hidden = !text;
+  }
+
+  /* ------------------------------------------------------------- stepper */
+  // Describe -> Diagnose -> Approve -> Fix -> Verify, driven by the live
+  // stages the server streams, so the bar follows the agent in real time.
+  const STEPS = ["describe", "diagnose", "approve", "remediate", "verify"];
+
+  function setStep(step, { done = false, failed = false } = {}) {
+    const index = STEPS.indexOf(step);
+    document.querySelectorAll(".stepper li").forEach((li, i) => {
+      li.classList.toggle("is-done", i < index || (done && i === index));
+      li.classList.toggle("is-current", i === index && !done);
+      li.classList.toggle("is-failed", failed && i === index);
+    });
+    document.querySelectorAll(".pipe-step").forEach((el, i) => el.classList.toggle("is-active", i === index));
+  }
+
+  function stepFromStage(text, status) {
+    const t = text.toLowerCase();
+    if (t.startsWith("understanding") || t.startsWith("issue type") || t.startsWith("running")
+        || t.startsWith("finding")) return setStep("diagnose");
+    if (t.startsWith("no root cause")) return setStep("diagnose", { done: true });
+    if (t.startsWith("root cause")) return setStep("diagnose", { done: true });
+    if (t.startsWith("fix ready")) return setStep("approve");
+    if (t.startsWith("approved by") || t.startsWith("automation job")) return setStep("remediate");
+    if (t.includes("verifying") || t.includes("checking current state")) return setStep("verify");
+    if (t.startsWith("resolved")) return setStep("verify", { done: true });
+    if (t.startsWith("not fixed")) return setStep("verify", { failed: true });
+    return undefined;
+  }
+
+  const newChannel = () =>
+    (crypto.randomUUID ? crypto.randomUUID() : `ch-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+
+  /** Subscribe to the server's live progress for one request. Rows for the
+   *  same tool call are updated in place: "running" becomes its result. */
+  function watch(channel) {
+    const rows = new Map();
+    let count = 0;
+    let sawStage = false;
+    let source = null;
+    try {
+      source = new EventSource(`/api/progress/${channel}`);
+    } catch {
+      return { close() {}, count: () => 0 };
+    }
+    source.onmessage = (message) => {
+      let event;
+      try { event = JSON.parse(message.data); } catch { return; }
+      if (event.kind === "keepalive") return;
+      if (event.kind === "done") {
+        source.close();
+        setNow("");
+        if (!sawStage) setStep("describe");  // a plain answer, no investigation
+        return;
+      }
+      count += 1;
+      if (event.kind === "stage") {
+        sawStage = true;
+        stepFromStage(event.text, event.status);
+        setNow(event.text, event.status);
+        pushActivity({ tool: "▸ " + event.text, status: event.status, summary: "" });
+        return;
+      }
+      if (event.kind === "job") {
+        stepFromStage(event.text, event.status);
+        setNow(event.text, event.status);
+        pushActivity({ tool: event.text, status: event.status, summary: "" });
+        return;
+      }
+      if (event.kind === "tool") {
+        const summary = event.status === "running"
+          ? `checking… ${event.summary || ""}`
+          : `${event.summary || ""}${event.seconds !== undefined ? `  (${event.seconds}s)` : ""}`;
+        const existing = rows.get(event.key);
+        if (existing) {
+          existing.className = `act ${event.status}`;
+          existing.querySelector(".act-sum").textContent = summary;
+        } else {
+          rows.set(event.key, pushActivity({ tool: event.text, status: event.status, summary }));
+        }
+        if (event.status === "running") setNow(`checking ${event.text}`);
+      }
+    };
+    source.onerror = () => { /* the request result still renders normally */ };
+    return { close: () => source && source.close(), count: () => count };
   }
 
   /* ---------------------------------------------------- approval affordance */
@@ -116,12 +221,15 @@
     const decide = async (approved) => {
       approve.disabled = reject.disabled = true;
       approve.textContent = approved ? "Executing…" : "Rejecting…";
+      const channel = newChannel();
+      const live = watch(channel);
+      dot?.classList.add("is-busy");
       try {
         const decision = await post(`/api/incidents/${incident.incident_id}/approval`, {
           plan_id: plan.plan_id,
           approved,
           note: note.value.trim(),
-        });
+        }, channel);
         if (!approved) {
           bubble("agent", "Rejected. Nothing was changed.");
           card.remove();
@@ -129,14 +237,21 @@
         }
         pushActivity({ tool: "approval", status: "healthy", summary: "approved by you" });
 
+        // Execution needs the single-use token the approval just issued - the
+        // server refuses to run a plan without proof of a human decision.
+        const token = decision && decision.approval && decision.approval.token;
+        if (!token) throw new Error("the approval did not return a token, so nothing was run");
         const executed = await post(`/api/incidents/${incident.incident_id}/execute`, {
           plan_id: plan.plan_id,
-        });
-        renderExecution(executed);
+          token,
+        }, channel);
+        renderExecution(executed, live.count() > 0);
       } catch (error) {
         bubble("agent", `That failed: ${error.message}`);
       } finally {
         card.remove();
+        dot?.classList.remove("is-busy");
+        setTimeout(() => live.close(), 1500);
       }
     };
 
@@ -144,9 +259,9 @@
     reject.addEventListener("click", () => decide(false));
   }
 
-  function renderExecution(incident) {
+  function renderExecution(incident, streamed) {
     const execution = incident.execution;
-    if (execution) {
+    if (execution && !streamed) {
       pushActivity({
         tool: execution.script_name || "runbook",
         status: execution.succeeded ? "healthy" : "unhealthy",
@@ -158,7 +273,7 @@
     }
 
     const verification = incident.verification;
-    if (verification) {
+    if (verification && !streamed) {
       (verification.checks || []).forEach((check) =>
         pushActivity({
           tool: "verify",
@@ -169,11 +284,12 @@
     }
 
     const ok = verification?.passed ?? execution?.succeeded;
+    const seconds = execution && execution.duration_ms ? ` in ${Math.round(execution.duration_ms / 1000)}s` : "";
     bubble(
       "agent",
       ok
-        ? "Done — the fix ran and the post-checks passed. The host should be back in service."
-        : "The fix ran but verification did not pass. Check the activity panel for what happened.",
+        ? `Done${seconds} — the fix ran and every post-check passed.`
+        : `The fix did not complete: ${execution?.error || verification?.summary || "see the activity panel"}`,
     );
   }
 
@@ -193,10 +309,14 @@
     };
   }
 
-  async function post(path, body) {
+  async function post(path, body, channel) {
     const response = await fetch(path, {
       method: "POST",
-      headers: { "Content-Type": "application/json", ...identityHeaders() },
+      headers: {
+        "Content-Type": "application/json",
+        ...identityHeaders(),
+        ...(channel ? { "X-Progress-Channel": channel } : {}),
+      },
       body: JSON.stringify(body),
     });
     const payload = await response.json().catch(() => ({}));
@@ -220,13 +340,20 @@
     messages.push({ role: "user", content: text });
     input.value = "";
     resetActivity();
-    setBusy(true, "thinking");
+    setStep("diagnose");
+    const channel = newChannel();
+    const live = watch(channel);
+    setBusy(true);
+    setNow("thinking");
 
     try {
-      const turn = await post("/api/chat", { messages, incident_id: incidentId });
+      const turn = await post("/api/chat", { messages, incident_id: incidentId }, channel);
+      const streamed = live.count() > 0;
 
-      resetActivity();
-      (turn.activity || []).forEach(pushActivity);
+      if (!streamed) {
+        resetActivity();
+        (turn.activity || []).forEach(pushActivity);
+      }
 
       if (turn.incident_id) incidentId = turn.incident_id;
 
@@ -235,7 +362,7 @@
 
       // An investigation returns the full evidence list; show it as work done.
       const incident = turn.incident;
-      if (incident) {
+      if (incident && !streamed) {
         (incident.steps || []).forEach((step) =>
           pushActivity({
             tool: step.tool,
@@ -250,6 +377,7 @@
       bubble("agent", `Something went wrong: ${error.message}`);
     } finally {
       setBusy(false);
+      setTimeout(() => live.close(), 1500);
     }
   });
 })();

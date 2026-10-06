@@ -8,6 +8,7 @@ rejected before any provider call. Outputs are structured dicts with a
 
 from __future__ import annotations
 
+import asyncio
 import math
 import re
 from typing import Any, ClassVar
@@ -34,10 +35,12 @@ READ = Permission.DIAGNOSTICS_READ
 # Heartbeat older than this means the agent is not reporting to the broker.
 HEARTBEAT_STALE_SECONDS = 300
 
-# A disconnected session idle this long is treated as orphaned.
-STALE_DISCONNECT_MINUTES = 30
-# An active session this old with no explorer.exe is a black screen, not a slow logon.
-SHELL_HUNG_MINUTES = 5
+# Any disconnected session counts as orphaned: once the engineer approves, the
+# sign-out runs immediately rather than waiting out an idle timer.
+STALE_DISCONNECT_MINUTES = 0
+# An active session this old with no explorer.exe is a black screen, not a
+# sign-in that is still loading.
+SHELL_HUNG_MINUTES = 2
 # Group Policy processing longer than this is reported as slowing logon.
 SLOW_GPO_SECONDS = 60
 # Clock drift thresholds: warn above 60s; Kerberos rejects tickets beyond 300s.
@@ -225,6 +228,7 @@ class LogAnalyticsInput(BaseModel):
             "avd_user_connection_errors",
             "avd_user_network_quality",
             "avd_user_clients",
+            "avd_user_last_host",
         }
         if v not in allowed:
             raise ValueError(f"queryId '{v}' is not a registered query")
@@ -371,7 +375,10 @@ class GetAvdSessionHostStatus(_ProviderTool):
         else:
             status = CheckStatus.DEGRADED
             summary = f"Session host status is {host_status}"
-        if isinstance(age, int) and age > HEARTBEAT_STALE_SECONDS:
+        # Only meaningful when the broker also says the host is down: the
+        # lastHeartBeat property is no longer refreshed for healthy hosts, so on
+        # an Available host an old timestamp is not evidence of anything.
+        if isinstance(age, int) and age > HEARTBEAT_STALE_SECONDS and host_status != "Available":
             summary += f"; last heartbeat {age // 60} minutes ago"
             data["heartbeatStale"] = True
         if data.get("drainModeEnabled"):
@@ -593,9 +600,10 @@ class GetAvdAgentStatus(_ProviderTool):
     async def execute(self, params: SessionHostInput) -> ToolResult:
         rg = params.resourceGroupName
         try:
-            agent = await self.provider.get_service_status(params.vmName, "RDAgent", rg)
-            loader = await self.provider.get_service_status(
-                params.vmName, "RDAgentBootLoader", rg
+            # Concurrent, so the provider can merge both into one in-guest call.
+            agent, loader = await asyncio.gather(
+                self.provider.get_service_status(params.vmName, "RDAgent", rg),
+                self.provider.get_service_status(params.vmName, "RDAgentBootLoader", rg),
             )
         except LookupError as exc:
             return error_result(self.spec.name, str(exc))
@@ -926,13 +934,15 @@ class GetRouteInformation(_ProviderTool):
         forced = [
             r
             for r in routes
-            if r.get("addressPrefix") == "0.0.0.0/0" and r.get("nextHopType") != "Internet"
+            # The SDK may hand back "RouteNextHopType.INTERNET" rather than "Internet".
+            if r.get("addressPrefix") == "0.0.0.0/0"
+            and str(r.get("nextHopType", "")).split(".")[-1].lower() != "internet"
         ]
         return ok_result(
             self.spec.name,
             status=CheckStatus.DEGRADED if forced else CheckStatus.HEALTHY,
             summary=(
-                f"Forced tunnelling in effect: 0.0.0.0/0 -> {forced[0]['nextHopType']}"
+                f"Forced tunnelling in effect: 0.0.0.0/0 -> {str(forced[0]['nextHopType']).split('.')[-1]}"
                 if forced
                 else f"{len(routes)} effective route(s); no forced tunnel"
             ),
@@ -1747,6 +1757,35 @@ class GetUserClients(_ProviderTool):
                          untrusted=True)
 
 
+class GetUserLastHost(_ProviderTool):
+    """Where the user last connected (Log Analytics). Used to find the host for
+    a user who has signed out since the problem happened."""
+
+    spec: ClassVar[ToolSpec] = _spec(
+        "get_user_last_host",
+        "The session host a user most recently connected to (Log Analytics WVDConnections).",
+        cost=2,
+    )
+    input_model: ClassVar[type[BaseModel]] = UserHistoryInput
+
+    async def execute(self, params: UserHistoryInput) -> ToolResult:
+        rows = await self.provider.query_log_analytics(
+            "avd_user_last_host", {"userName": params.userPrincipalName, "hours": params.hours}
+        )
+        if not rows:
+            return ok_result(self.spec.name, status=CheckStatus.UNKNOWN,
+                             summary=f"No connection by the user in the last {params.hours}h",
+                             data={"found": False}, untrusted=True)
+        host = str(rows[0].get("SessionHostName") or "")
+        return ok_result(
+            self.spec.name, status=CheckStatus.HEALTHY,
+            summary=f"Last connected to {host} at {rows[0].get('TimeGenerated')}",
+            data={"found": True, "sessionHostName": host, "vmName": host.split(".")[0],
+                  "lastSeen": rows[0].get("TimeGenerated")},
+            untrusted=True,
+        )
+
+
 class GetSsoConfiguration(_ProviderTool):
     spec: ClassVar[ToolSpec] = _spec(
         "get_sso_configuration",
@@ -1866,6 +1905,7 @@ def build_diagnostic_tools(provider: IDiagnosticProvider) -> list[Any]:
         GetUserSignIns(provider),
         GetUserClients(provider),
         GetSsoConfiguration(provider),
+        GetUserLastHost(provider),
         QueryLogAnalytics(provider),
         GetAzureActivityLog(provider),
     ]

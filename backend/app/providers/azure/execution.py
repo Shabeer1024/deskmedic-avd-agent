@@ -27,9 +27,11 @@ import asyncio
 from datetime import UTC, datetime
 from typing import Any
 
+from ... import progress
 from ...config import Settings
 from ...logging_config import get_logger
 from ..interfaces import IExecutionProvider
+from . import enum_text
 
 logger = get_logger(__name__)
 
@@ -140,7 +142,7 @@ class AzureAutomationExecutionProvider(IExecutionProvider):
         return {
             rb.name
             for rb in self.client.runbook.list_by_automation_account(rg, account)
-            if str(getattr(rb, "state", "")) == "Published"
+            if enum_text(getattr(rb, "state", None)).lower() == "published"
         }
 
     async def _poll(
@@ -150,9 +152,12 @@ class AzureAutomationExecutionProvider(IExecutionProvider):
         last = ""
         while asyncio.get_running_loop().time() < deadline:
             job = await asyncio.to_thread(self.client.job.get, rg, account, job_name)
-            status = str(job.status)
+            status = enum_text(job.status)
             if status != last:
                 output.append(f"Job status: {status}")
+                progress.emit("job", f"Automation job {status}",
+                              "healthy" if status == "Completed" else
+                              "unhealthy" if status in ("Failed", "Stopped", "Suspended") else "running")
                 last = status
             if status in _TERMINAL_STATES:
                 return status

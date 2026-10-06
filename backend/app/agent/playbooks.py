@@ -699,7 +699,9 @@ def client_side_playbook(ctx: PlaybookContext) -> list[PlannedStep]:
 
 
 def triage_playbook(ctx: PlaybookContext) -> list[PlannedStep]:
-    """Used when the scenario is unknown: cheap, broad, entirely read-only."""
+    """Used when no specific problem is described ("full health check"): a
+    broad, read-only sweep of whatever was selected - host, user or pool - so
+    the rules can find whatever is actually wrong."""
     steps: list[PlannedStep] = []
     if ctx.host_pool:
         steps.append(
@@ -718,8 +720,30 @@ def triage_playbook(ctx: PlaybookContext) -> list[PlannedStep]:
                 required=False,
             )
         )
+    if ctx.user_principal_name:
+        user = {"userPrincipalName": ctx.user_principal_name, "hours": 24}
+        steps += [
+            PlannedStep("User's sessions", "get_user_session",
+                        {"userPrincipalName": ctx.user_principal_name, "hostPoolName": ctx.host_pool},
+                        required=False),
+            PlannedStep("Entra ID account", "get_user_directory_status",
+                        {"userPrincipalName": ctx.user_principal_name}, required=False),
+            PlannedStep("Recent sign-ins", "get_user_sign_ins", user, required=False),
+            PlannedStep("Connection errors", "get_user_connection_errors", user, required=False),
+        ]
     if ctx.vm_name:
         steps += _core_host_checks(ctx)
+        steps += [
+            _in_guest("FSLogix profiles", "get_fslogix_status", ctx.user_scoped_vm_params(), required=False),
+            _in_guest("Pending reboot", "get_pending_reboot_status", ctx.vm_params(), required=False),
+            _in_guest("Clock offset", "get_time_sync_status", ctx.vm_params(), required=False),
+            _in_guest("Domain trust", "get_domain_trust_status", ctx.vm_params(), required=False),
+            _in_guest("CPU and memory", "get_host_performance", ctx.vm_params(), required=False),
+            _in_guest("AVD required URLs", "test_required_urls", ctx.vm_params(), required=False),
+        ]
+        if ctx.user_principal_name:
+            steps.append(_in_guest("User's logon session", "get_logon_session_status",
+                                   ctx.user_scoped_vm_params(), required=False))
     return steps
 
 
@@ -748,6 +772,7 @@ PLAYBOOKS: dict[Scenario, Callable[[PlaybookContext], list[PlannedStep]]] = {
     Scenario.SSO_AUTHENTICATION: sso_authentication_playbook,
     Scenario.CLIENT_SIDE: client_side_playbook,
     Scenario.THIN_CLIENT: client_side_playbook,
+    Scenario.HEALTH_CHECK: triage_playbook,
     Scenario.UNKNOWN: triage_playbook,
 }
 

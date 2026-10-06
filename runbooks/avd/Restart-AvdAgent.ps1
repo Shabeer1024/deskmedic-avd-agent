@@ -63,6 +63,23 @@ function Write-Step {
     Write-Output ($entry | ConvertTo-Json -Compress)
 }
 
+
+function Read-GuestJson {
+    # The in-guest script prints one JSON object on stdout. If it printed
+    # nothing (it failed on the host), report the host's own error instead of
+    # failing on a missing regex match.
+    param($RunResult, [switch]$Raw)
+    $out = (@($RunResult.Value) | Where-Object { $_.Code -like '*StdOut*' } | ForEach-Object { $_.Message }) -join "`n"
+    $err = (@($RunResult.Value) | Where-Object { $_.Code -like '*StdErr*' } | ForEach-Object { $_.Message }) -join "`n"
+    $match = [regex]::Match([string]$out, '\{.*\}')
+    if (-not $match.Success) {
+        $detail = if ($err.Trim()) { $err.Trim() } else { 'no output' }
+        throw "The script on the host returned no result. Host error: $detail"
+    }
+    if ($Raw) { return $match.Value }
+    return ($match.Value | ConvertFrom-Json)
+}
+
 try {
     Write-Step -Phase 'auth' -Message 'Connecting with the Automation Managed Identity.'
     $null = Connect-AzAccount -Identity -ErrorAction Stop
@@ -88,7 +105,7 @@ $a = Get-Service -Name 'RDAgent' -ErrorAction SilentlyContinue
 '@
     $pre = Invoke-AzVMRunCommand -ResourceGroupName $ResourceGroupName -VMName $VmName `
         -CommandId 'RunPowerShellScript' -ScriptString $preScript
-    $preState = ($pre.Value[0].Message | Select-String -Pattern '\{.*\}' -AllMatches).Matches[0].Value | ConvertFrom-Json
+    $preState = Read-GuestJson $pre
     Write-Step -Phase 'pre-check' -Message "RDAgentBootLoader=$($preState.bootLoader); RDAgent=$($preState.rdAgent)"
 
     if ($preState.bootLoader -eq 'NotInstalled') {
@@ -120,7 +137,7 @@ $a = Get-Service -Name 'RDAgent' -ErrorAction SilentlyContinue
         Write-Step -Phase 'remediate' -Message 'Starting RDAgentBootLoader on the session host.'
         $fix = Invoke-AzVMRunCommand -ResourceGroupName $ResourceGroupName -VMName $VmName `
             -CommandId 'RunPowerShellScript' -ScriptString $fixScript
-        $postState = ($fix.Value[0].Message | Select-String -Pattern '\{.*\}' -AllMatches).Matches[0].Value | ConvertFrom-Json
+        $postState = Read-GuestJson $fix
         Write-Step -Phase 'post-check' -Message "RDAgentBootLoader=$($postState.bootLoader); RDAgent=$($postState.rdAgent)"
         if ($postState.bootLoader -ne 'Running') {
             Write-Step -Phase 'post-check' -Status 'failed' -Message 'RDAgentBootLoader did not reach the Running state.'

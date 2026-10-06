@@ -22,6 +22,7 @@ from typing import Any, ClassVar, Generic, TypeVar
 
 from pydantic import BaseModel, Field, ValidationError
 
+from .. import progress
 from ..logging_config import get_logger
 from ..models import CheckStatus, RiskLevel, utcnow
 from ..security import ParameterValidationError, Permission, Principal
@@ -210,6 +211,8 @@ class ToolRegistry:
             await self._deny(name, principal, incident_id, f"invalid_parameter:{exc.parameter}", raw_params)
             return error_result(name, str(exc), parameters=raw_params)
 
+        key = f"{name}#{id(params)}"
+        progress.emit("tool", name, "running", key=key, summary=tool.spec.summary)
         try:
             result = await tool.execute(params)
         except ParameterValidationError as exc:
@@ -220,6 +223,8 @@ class ToolRegistry:
 
         result.duration_ms = int((time.perf_counter() - started) * 1000)
         result.parameters = result.parameters or params.model_dump(exclude_none=True)
+        progress.emit("tool", name, result.status.value, key=key, summary=result.summary,
+                      seconds=round(result.duration_ms / 1000, 1))
 
         logger.info(
             "tool_invoked",
