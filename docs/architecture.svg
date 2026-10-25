@@ -1,0 +1,224 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="830" viewBox="0 0 1200 830" role="img" aria-label="DeskMedic architecture: the browser console sends incidents to a FastAPI pipeline of triage, playbooks, tool registry, diagnosis, planner, policy, approval, execution and verification. Reads go through a diagnostic provider to ARM, Run Command, Log Analytics and Graph. Changes go only through approval to Azure Automation runbooks. Azure OpenAI only classifies and ranks.">
+  <style>.t{font:500 12.5px 'Segoe UI',Helvetica,Arial,sans-serif} .tw{font:600 12.5px 'Segoe UI',Helvetica,Arial,sans-serif}
+.ts,.lbl{font:400 10.5px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace} .zone-sub{font:400 11px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace} .lbl-w{font:500 10.5px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+svg{background:#ffffff}
+.zone{fill:#eef2f5;stroke:#c9d3dc}
+.zone-label{font:600 13px 'Segoe UI',Helvetica,Arial,sans-serif;fill:#17212b}
+.zone-sub,.ts,.lbl{fill:#5b6b7a}
+.box{fill:#ffffff;stroke:#c9d3dc;stroke-width:1.2}
+.box-w{fill:#fdf1e6;stroke:#b4530a;stroke-width:1.5}
+.box-ai{fill:#ffffff;stroke:#5b6b7a;stroke-width:1.2;stroke-dasharray:5 4}
+.t{fill:#17212b} .tw,.lbl-w{fill:#b4530a}
+.edge{stroke:#17212b;stroke-width:1.3;fill:none;opacity:.75}
+.edge-w{stroke:#b4530a;stroke-width:1.8;fill:none}
+.edge-ai{stroke:#5b6b7a;stroke-width:1.3;fill:none;stroke-dasharray:5 4}
+.ah{fill:#17212b;opacity:.75} .ah-w{fill:#b4530a} .ah-ai{fill:#5b6b7a}
+@media (prefers-color-scheme: dark){
+svg{background:#0d1117}
+.zone{fill:#151d25;stroke:#34424f}
+.zone-label{font:600 13px 'Segoe UI',Helvetica,Arial,sans-serif;fill:#e3e9ef}
+.zone-sub,.ts,.lbl{fill:#93a3b2}
+.box{fill:#18212a;stroke:#34424f;stroke-width:1.2}
+.box-w{fill:#2b1f15;stroke:#f29a4a;stroke-width:1.5}
+.box-ai{fill:#18212a;stroke:#93a3b2;stroke-width:1.2;stroke-dasharray:5 4}
+.t{fill:#e3e9ef} .tw,.lbl-w{fill:#f29a4a}
+.edge{stroke:#e3e9ef;stroke-width:1.3;fill:none;opacity:.75}
+.edge-w{stroke:#f29a4a;stroke-width:1.8;fill:none}
+.edge-ai{stroke:#93a3b2;stroke-width:1.3;fill:none;stroke-dasharray:5 4}
+.ah{fill:#e3e9ef;opacity:.75} .ah-w{fill:#f29a4a} .ah-ai{fill:#93a3b2}
+}</style><defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah"/></marker>
+    <marker id="aw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah-w"/></marker>
+    <marker id="aai" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="ah-ai"/></marker>
+  </defs>
+
+  <!-- ===== Zones ===== -->
+  <rect class="zone" x="10" y="10" width="240" height="810" rx="10"/>
+  <text class="zone-label" x="26" y="34">Console</text>
+  <text class="zone-sub" x="26" y="50">frontend/ · vanilla JS, no build</text>
+
+  <rect class="zone" x="280" y="10" width="510" height="810" rx="10"/>
+  <text class="zone-label" x="296" y="34">FastAPI backend</text>
+  <text class="zone-sub" x="296" y="50">backend/app/ · providers chosen in container.py</text>
+
+  <rect class="zone" x="820" y="10" width="370" height="810" rx="10"/>
+  <text class="zone-label" x="836" y="34">Azure</text>
+  <text class="zone-sub" x="836" y="50">AVD_AGENT_MODE=azure (mock estate otherwise)</text>
+
+  <!-- ===== Console ===== -->
+  <rect class="box" x="30" y="60" width="200" height="40" rx="6"/>
+  <text class="t" x="44" y="78">Live activity feed</text>
+  <text class="ts" x="44" y="92">progress bar, check status</text>
+
+  <rect class="box" x="30" y="122" width="200" height="40" rx="6"/>
+  <text class="t" x="44" y="140">Chat</text>
+  <text class="ts" x="44" y="154">plain-language problem</text>
+
+  <rect class="box" x="30" y="174" width="200" height="40" rx="6"/>
+  <text class="t" x="44" y="192">Structured form</text>
+  <text class="ts" x="44" y="206">host / user · health check</text>
+
+  <rect class="box-w" x="30" y="504" width="200" height="40" rx="6"/>
+  <text class="tw" x="44" y="522">Approve &amp; Execute</text>
+  <text class="ts" x="44" y="536">Troubleshoot mode, L2 role</text>
+
+  <rect class="box" x="30" y="696" width="200" height="40" rx="6"/>
+  <text class="t" x="44" y="714">Estate, audit, runbooks</text>
+  <text class="ts" x="44" y="728">GET /estate /audit /runbooks</text>
+
+  <!-- ===== Backend: progress strip ===== -->
+  <rect class="box" x="300" y="62" width="470" height="36" rx="6"/>
+  <text class="t" x="314" y="84">Progress bus</text>
+  <text class="ts" x="410" y="84">every stage, check and job status is published</text>
+
+  <!-- ===== Backend: pipeline (x 330, w 220, step 64) ===== -->
+  <g>
+    <rect class="box" x="330" y="120" width="220" height="40" rx="6"/>
+    <text class="t" x="344" y="138">Triage</text>
+    <text class="ts" x="344" y="152">regex entities + scenario (25)</text>
+
+    <rect class="box" x="330" y="184" width="220" height="40" rx="6"/>
+    <text class="t" x="344" y="202">Playbooks</text>
+    <text class="ts" x="344" y="216">checklist per scenario</text>
+
+    <rect class="box" x="330" y="248" width="220" height="40" rx="6"/>
+    <text class="t" x="344" y="266">Tool registry</text>
+    <text class="ts" x="344" y="280">permission · validate · audit</text>
+
+    <rect class="box" x="330" y="312" width="220" height="40" rx="6"/>
+    <text class="t" x="344" y="330">Diagnosis engine</text>
+    <text class="ts" x="344" y="344">53 root-cause rules</text>
+
+    <rect class="box" x="330" y="376" width="220" height="40" rx="6"/>
+    <text class="t" x="344" y="394">Remediation planner</text>
+    <text class="ts" x="344" y="408">cause → approved action</text>
+
+    <rect class="box" x="330" y="440" width="220" height="40" rx="6"/>
+    <text class="t" x="344" y="458">Policy engine</text>
+    <text class="ts" x="344" y="472">risk · kill switch · scope</text>
+
+    <rect class="box-w" x="330" y="504" width="220" height="40" rx="6"/>
+    <text class="tw" x="344" y="522">Approval service</text>
+    <text class="ts" x="344" y="536">human gate, policy re-check</text>
+
+    <rect class="box-w" x="330" y="568" width="220" height="40" rx="6"/>
+    <text class="tw" x="344" y="586">Remediation tools</text>
+    <text class="ts" x="344" y="600">needs remediation.execute</text>
+
+    <rect class="box" x="330" y="632" width="220" height="40" rx="6"/>
+    <text class="t" x="344" y="650">Verification</text>
+    <text class="ts" x="344" y="664">fresh read-only checks</text>
+
+    <rect class="box" x="330" y="696" width="220" height="40" rx="6"/>
+    <text class="t" x="344" y="714">Resolved / Failed</text>
+    <text class="ts" x="344" y="728">+ incident memory</text>
+  </g>
+
+  <!-- pipeline edges + labels -->
+  <g>
+    <line class="edge" x1="440" y1="160" x2="440" y2="183" marker-end="url(#a)"/>
+    <text class="lbl" x="450" y="176">scenario + entities</text>
+    <line class="edge" x1="440" y1="224" x2="440" y2="247" marker-end="url(#a)"/>
+    <text class="lbl" x="450" y="240">checks, in parallel</text>
+    <line class="edge" x1="440" y1="288" x2="440" y2="311" marker-end="url(#a)"/>
+    <text class="lbl" x="450" y="304">Evidence[]</text>
+    <line class="edge" x1="440" y1="352" x2="440" y2="375" marker-end="url(#a)"/>
+    <text class="lbl" x="450" y="368">cause + evidence ids</text>
+    <line class="edge" x1="440" y1="416" x2="440" y2="439" marker-end="url(#a)"/>
+    <text class="lbl" x="450" y="432">plan: runbook, params</text>
+    <line class="edge-w" x1="440" y1="480" x2="440" y2="503" marker-end="url(#aw)"/>
+    <text class="lbl-w" x="450" y="496">plan allowed</text>
+    <line class="edge-w" x1="440" y1="544" x2="440" y2="567" marker-end="url(#aw)"/>
+    <text class="lbl-w" x="450" y="560">single-use token</text>
+    <line class="edge" x1="440" y1="608" x2="440" y2="631" marker-end="url(#a)"/>
+    <text class="lbl" x="450" y="624">job Completed</text>
+    <line class="edge" x1="440" y1="672" x2="440" y2="695" marker-end="url(#a)"/>
+    <text class="lbl" x="450" y="688">post-checks</text>
+  </g>
+
+  <!-- ===== Backend: support column (x 590, w 180) ===== -->
+  <rect class="box" x="590" y="248" width="180" height="40" rx="6"/>
+  <text class="t" x="602" y="266">Diagnostic provider</text>
+  <text class="ts" x="602" y="280">Mock | Azure</text>
+
+  <rect class="box" x="590" y="312" width="180" height="40" rx="6"/>
+  <text class="t" x="602" y="330">Knowledge + memory</text>
+  <text class="ts" x="602" y="344">26 docs · past fixes</text>
+
+  <rect class="box" x="590" y="376" width="180" height="40" rx="6"/>
+  <text class="t" x="602" y="394">PowerShell catalogue</text>
+  <text class="ts" x="602" y="408">actions + static validator</text>
+
+  <rect class="box-w" x="590" y="568" width="180" height="40" rx="6"/>
+  <text class="tw" x="602" y="586">Execution provider</text>
+  <text class="ts" x="602" y="600">Mock | Azure Automation</text>
+
+  <!-- audit strip -->
+  <rect class="box" x="300" y="764" width="470" height="40" rx="6"/>
+  <text class="t" x="314" y="782">Audit sink</text>
+  <text class="ts" x="314" y="796">hash-chained JSONL, SHA-256 of previous record</text>
+  <line class="edge" x1="440" y1="736" x2="440" y2="763" marker-end="url(#a)"/>
+  <text class="lbl" x="450" y="754">every step writes a record</text>
+
+  <!-- support edges -->
+  <line class="edge" x1="550" y1="268" x2="589" y2="268" marker-end="url(#a)"/>
+  <line class="edge" x1="590" y1="342" x2="551" y2="342" marker-end="url(#a)"/>
+  <line class="edge" x1="590" y1="396" x2="551" y2="396" marker-end="url(#a)"/>
+  <line class="edge-w" x1="550" y1="588" x2="589" y2="588" marker-end="url(#aw)"/>
+
+  <!-- ===== Console ↔ backend ===== -->
+  <line class="edge" x1="231" y1="142" x2="329" y2="142" marker-end="url(#a)"/>
+  <text class="lbl" x="238" y="134">POST /incidents</text>
+  <text class="lbl" x="238" y="158">POST /chat</text>
+  <line class="edge" x1="300" y1="80" x2="231" y2="80" marker-end="url(#a)"/>
+  <text class="lbl" x="234" y="72">SSE /progress</text>
+  <line class="edge-w" x1="231" y1="524" x2="329" y2="524" marker-end="url(#aw)"/>
+  <text class="lbl-w" x="238" y="516">POST /approval</text>
+  <text class="lbl-w" x="238" y="540">POST /execute</text>
+
+  <!-- ===== Azure: OpenAI ===== -->
+  <rect class="box-ai" x="850" y="112" width="320" height="58" rx="6"/>
+  <text class="t" x="866" y="134">Azure OpenAI · gpt-4o</text>
+  <text class="ts" x="866" y="150">no Azure credentials, cannot name a</text>
+  <text class="ts" x="866" y="163">tool or target; answers checked in code</text>
+  <polyline class="edge-ai" points="550,130 849,130" marker-end="url(#aai)"/>
+  <text class="lbl" x="600" y="124">classify scenario</text>
+  <polyline class="edge-ai" points="550,322 572,322 572,160 849,160" marker-end="url(#aai)"/>
+  <text class="lbl" x="600" y="184">rank + explain causes</text>
+
+  <!-- ===== Azure: read path ===== -->
+  <rect class="box" x="840" y="206" width="340" height="150" rx="8" style="fill: none; stroke-dasharray: 2 3;"/>
+  <text class="ts" x="852" y="224">read · managed identity, Reader roles</text>
+  <rect class="box" x="852" y="236" width="152" height="46" rx="6"/>
+  <text class="t" x="864" y="256">ARM / AVD API</text>
+  <text class="ts" x="864" y="271">hosts, pools, sessions</text>
+  <rect class="box" x="1016" y="236" width="152" height="46" rx="6"/>
+  <text class="t" x="1028" y="256">VM Run Command</text>
+  <text class="ts" x="1028" y="271">read-only scripts</text>
+  <rect class="box" x="852" y="296" width="152" height="46" rx="6"/>
+  <text class="t" x="864" y="316">Log Analytics</text>
+  <text class="ts" x="864" y="331">KQL: errors, network</text>
+  <rect class="box" x="1016" y="296" width="152" height="46" rx="6"/>
+  <text class="t" x="1028" y="316">Microsoft Graph</text>
+  <text class="ts" x="1028" y="331">Entra, sign-ins, CA</text>
+  <line class="edge" x1="770" y1="268" x2="839" y2="268" marker-end="url(#a)"/>
+
+  <!-- ===== Azure: write path ===== -->
+  <rect class="box-w" x="840" y="540" width="340" height="150" rx="8" style="fill: none; stroke-dasharray: 2 3;"/>
+  <text class="lbl-w" x="852" y="558">change · only after approval</text>
+  <rect class="box-w" x="852" y="568" width="316" height="44" rx="6"/>
+  <text class="tw" x="866" y="587">Azure Automation</text>
+  <text class="ts" x="866" y="602">starts a published runbook by name (12)</text>
+  <line class="edge-w" x1="1010" y1="612" x2="1010" y2="631" marker-end="url(#aw)"/>
+  <rect class="box" x="852" y="632" width="316" height="44" rx="6"/>
+  <text class="t" x="866" y="651">AVD session hosts</text>
+  <text class="ts" x="866" y="666">agent, FSLogix, DNS, sessions, VM</text>
+  <line class="edge-w" x1="770" y1="588" x2="851" y2="588" marker-end="url(#aw)"/>
+
+  <!-- ===== Azure: hosting ===== -->
+  <rect class="box" x="840" y="712" width="340" height="92" rx="8"/>
+  <text class="t" x="852" y="732">Hosting · infra/terraform</text>
+  <text class="ts" x="852" y="752">Container App      Managed identity</text>
+  <text class="ts" x="852" y="770">Key Vault          App Insights</text>
+  <text class="ts" x="852" y="788">Audit blob storage Log Analytics</text>
+</svg>
